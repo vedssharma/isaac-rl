@@ -1,0 +1,6 @@
+# Laptop-side tools: launch Daytona runs, check keys, read W&B/HF results.
+# Isaac Sim / Isaac Lab are NOT installed locally; see scripts/daytona/install_isaac.sh.
+daytona==0.231.1
+wandb==0.31.0
+huggingface-hub==2.4.0
+python-dotenv==1.2.4
