@@ -2,7 +2,7 @@
 
 **One-line goal:** train a quadrotor policy, entirely in simulation with NVIDIA Isaac Sim / Isaac Lab,
 that flies from a start point to a goal through a dense, randomized obstacle field without crashing.
-It starts from full state and ends with only onboard depth sensing. Training runs on Daytona GPU sandboxes.
+It starts from full state and ends with only onboard depth sensing. Training runs on NVIDIA Brev GPU instances.
 
 This plan is written for someone **new to RL**. Each phase teaches one new concept, and each phase has
 a clear "done" test, so you always have a working result to build on.
@@ -16,7 +16,7 @@ a clear "done" test, so you always have a working result to build on.
 | G1 | Learn applied RL: PPO, reward design, curricula, domain randomization, teacher→student distillation | You can explain why each reward term exists and show an ablation that proves it |
 | G2 | Build a custom Isaac Lab environment, not just run a built-in one | `Drone-Nav-Obstacles-v0` is registered and trains from one command |
 | G3 | A policy that navigates clutter from **depth images only** | ≥ 85% success on held-out obstacle maps at medium density |
-| G4 | Reproducible, cheap cloud experiments | One command starts a Daytona GPU run; checkpoints and metrics outlive the sandbox |
+| G4 | Reproducible, cheap cloud experiments | One command starts a Brev GPU run; checkpoints and metrics outlive the instance |
 | G5 | A portfolio-quality write-up | README with videos, learning curves, ablation tables |
 
 **Non-goals for v1:** real hardware deployment, multi-drone swarms, and photorealistic RGB perception.
@@ -33,17 +33,22 @@ These are listed as stretch goals in §10.
 | RL library | **RSL-RL** (PPO), with **skrl** as a second option | RSL-RL is fast, simple and the default in Isaac Lab examples. skrl is useful later to compare algorithms (SAC, etc.) |
 | Environment style | Isaac Lab **Direct** workflow (`DirectRLEnv`) | Easier to read and debug than the manager-based workflow when learning. Rewards and observations live in one file. |
 | Config | Isaac Lab `@configclass` + Hydra CLI overrides | Every experiment is fully described by its config and command line |
-| Tracking | **Weights & Biases** (TensorBoard as fallback) | Sandboxes are temporary, so metrics have to go off-box live |
-| Artifacts | W&B Artifacts or a **Hugging Face Hub** model repo | Checkpoints and videos survive after the sandbox is deleted |
-| Compute | **Daytona GPU sandboxes** | See §3 |
-| Local dev | Any laptop, no GPU needed | Write code locally and run it on Daytona. Use `pytest` on CPU-only logic such as reward math and map generation. |
+| Tracking | **Weights & Biases** (TensorBoard as fallback) | Run boxes are deleted after each run, so metrics have to go off-box live |
+| Artifacts | W&B Artifacts or a **Hugging Face Hub** model repo | Checkpoints and videos survive after the instance is deleted |
+| Compute | **NVIDIA Brev GPU instances** | See §3 |
+| Local dev | Any laptop, no GPU needed | Write code locally and run it on Brev. Use `pytest` on CPU-only logic such as reward math and map generation. |
 
-> **Version pinning rule:** pin exact versions of Isaac Sim, Isaac Lab, RSL-RL, torch and the Daytona SDK
-> in `requirements.lock` / the sandbox image. Isaac Lab changes APIs between minor releases.
+> **Version pinning rule:** pin exact versions of Isaac Sim, Isaac Lab, RSL-RL and torch in
+> `requirements.lock` / the base Docker image, and record the `brev` CLI version you use. Isaac Lab changes APIs between minor releases.
 
 ---
 
-## 3. Compute: running on Daytona GPU sandboxes
+## 3. Compute: running on NVIDIA Brev
+
+[Brev](https://brev.nvidia.com) rents GPU **virtual machines** from several cloud providers through one account
+and one CLI (`brev`). An instance is a normal Ubuntu VM with NVIDIA drivers, Docker and SSH, and open outbound
+internet, so `pypi.nvidia.com`, `nvcr.io`, W&B and HF all work with no workarounds. Billing is prepaid credits,
+charged hourly while an instance runs.
 
 ### 3.1 Important hardware constraint: pick the GPU by observation type
 
@@ -51,47 +56,55 @@ Isaac Sim's **RTX rendering** (RTX cameras, `TiledCamera`) needs a GPU with **RT
 H100/H200 (and A100) have none, so RTX camera rendering is **not supported** on them. Physics-only
 training runs fine on them.
 
-Daytona's GPU list includes **H100, H200, RTX Pro 6000, RTX 4090 and RTX 5090**. So:
+Brev's catalog includes **L40S, L40, RTX 6000 Ada, RTX PRO Server 6000, A6000, L4, A10G, RTX 5090** (all with
+RT cores) and **H100, H200, A100, B200** (no RT cores). Availability depends on the provider and region, so check
+with `brev search --gpu-name <name>`. So:
 
 | Workload | GPU | Notes |
 |----------|-----|-------|
-| State-based training (Phases 1–2, teacher policy) | H100 / H200 **or** any RTX card | No rendering. Run `--headless`. |
+| State-based training (Phases 1–2, teacher policy) | Any of them | No rendering. Run `--headless`. |
 | Ray-cast depth (`RayCaster` / `RayCasterCamera`) | Any of them | Warp ray casting runs on CUDA cores and needs no RT cores. **This is the main perception path in this plan** (see §5.4). |
-| RTX depth/RGB cameras (`TiledCamera`) | **RTX Pro 6000 / 5090 / 4090 only** | Run `--headless --enable_cameras`. Needs EGL/Vulkan libraries in the image. |
-| Video recording for the write-up | RTX card | `--video` needs rendering |
+| RTX depth/RGB cameras (`TiledCamera`) | **RT-core cards only** (L40S, RTX PRO 6000, RTX 6000 Ada, …) | Run `--headless --enable_cameras`. |
+| Video recording for the write-up | RT-core card | `--video` needs rendering |
 
-**Default choice:** the **RTX Pro 6000** (lots of VRAM, RT cores, runs everything). Use the cheapest RTX card
-for quick debugging. Use H100s only for large state-based sweeps, if they cost less per run.
+**Default choice:** the **L40S** (48 GB, RT cores, runs everything, and is NVIDIA's reference cloud GPU for
+Isaac Sim). Use the **RTX PRO Server 6000** when you want more VRAM, an **L4 / A10G** for cheap debugging, and
+H100s only for large state-based sweeps, if they cost less per run.
 
-### 3.2 Treat sandboxes as cattle
+### 3.2 One dev box, disposable run boxes
 
-Daytona GPU sandboxes are **temporary**: no pause or fork, and files are lost when the sandbox
-is deleted (only filesystem snapshots persist). Design every run around that:
+Brev instances are VMs that can be **stopped**. Stopping releases the GPU (no compute charge, a small storage
+charge) and keeps the disk, including installed packages and Docker images. Deleting loses everything. Restarting a
+stopped instance needs the same GPU type to be free in that region, so it can fail when capacity is tight. Use this:
 
-1. **Build a base snapshot once:** start from Daytona's `daytona-gpu` snapshot, install Isaac Sim + Isaac Lab via pip
-   (`ACCEPT_EULA=Y`, `OMNI_KIT_ACCEPT_EULA=YES`), then run one short warm-up training run so the
-   **shader/kit caches** are built (the first Isaac Sim start can take several minutes). Save this as a
-   snapshot, e.g. `isaac-rl-base:<isaaclab-version>`.
-   - Alternative: a custom image `FROM nvcr.io/nvidia/isaac-lab:<tag>`. It works but is ~20 GB, so check Daytona's
-     image size limits first.
-2. **One run = one sandbox.** A local launcher (`scripts/daytona/launch.py`) does the following:
-   - creates a sandbox from the snapshot, with the chosen GPU type, an `auto_stop` timeout and labels
-     (`exp=<name>`, `seed=<n>`)
-   - injects secrets as environment variables (`WANDB_API_KEY`, `HF_TOKEN`), never stored in the snapshot
-   - clones this repo **at a specific git SHA**, so every run is reproducible
-   - starts `train.py` in a background session, writing logs to a file
+1. **A dev box** (`isaac-rl-dev`, one L40S): set up once, used by hand for debugging, quick runs and videos.
+   **Stop it whenever you're not using it.** Keep code in git and results on W&B/HF, not only on its disk.
+2. **A base Docker image, built once per Isaac Lab version:** Isaac Sim + Isaac Lab + this repo's dependencies,
+   built from `scripts/brev/install_isaac.sh` (or `FROM nvcr.io/nvidia/isaac-lab:<tag>`) and pushed to a private
+   registry (GHCR), e.g. `ghcr.io/<you>/isaac-rl-base:<isaaclab-version>`. Run a short warm-up inside it so the
+   **shader/kit caches** are baked in (the first Isaac Sim start can take several minutes). This is what makes new
+   run boxes start fast.
+3. **One run = one run box.** A local launcher (`scripts/brev/launch.py`) wraps the `brev` CLI
+   (there is no Python SDK):
+   - `brev create isaac-rl-<exp>-s<seed>-<id> --gpu-name <gpu> --startup-script @scripts/brev/bootstrap.sh`
+     (pulls the base image)
+   - passes secrets (`WANDB_API_KEY`, `HF_TOKEN`) as environment variables at run time, never baked into the image
+   - checks out this repo **at a specific git SHA**, so every run is reproducible
+   - `brev exec` starts `train.py` inside the container under `nohup`, writing logs to a file
    - streams logs back, and polls for completion or a timeout
-   - on exit, checks that the final checkpoint was uploaded, then **deletes the sandbox**
-3. **Upload continuously:** checkpoints go to W&B or HF Hub every N iterations (not only at the end), so a
-   crash or preemption loses minutes, not hours. `train.py --resume <artifact>` continues a run.
-4. **Sweeps = fan-out:** `launch.py --sweep configs/sweeps/reward_ablation.yaml` starts one sandbox
+   - on exit (including errors and Ctrl-C), checks that the final checkpoint was uploaded, then
+     **`brev delete`s the instance**
+4. **Upload continuously:** checkpoints go to W&B or HF Hub every N iterations (not only at the end), so a
+   crash or a lost instance costs minutes, not hours. `train.py --resume <artifact>` continues a run.
+5. **Sweeps = fan-out:** `launch.py --sweep configs/sweeps/reward_ablation.yaml` starts one run box
    per (config × seed), up to a concurrency cap.
-5. **Cost guards:** a hard `max_runtime` per run, `auto_stop`, a nightly "list and kill orphaned sandboxes"
-   script, and a cost line per run in W&B (GPU hours × rate).
+6. **Cost guards:** prepaid credits are the hard cap (top up only what you plan to spend); a hard `max_runtime`
+   per run in the launcher; `scripts/brev/reap.py` that lists instances named `isaac-rl-*` (not the dev box) and
+   deletes any older than their max runtime; and a cost line per run in W&B (GPU hours × rate).
 
-> **Check before coding the launcher:** Daytona's Python SDK has changed names across versions
-> (`daytona` vs `daytona_sdk`, how GPUs are requested in `Resources`, `auto_stop_interval` defaults).
-> Pin the SDK version and check field names against the official API reference.
+> **Check before coding the launcher:** the `brev` CLI is young and changes quickly. Pin and record its version,
+> sign in non-interactively with `brev login --api-key "$BREV_API_KEY"` followed by `brev refresh`, and note
+> that `brev create` can report success before the instance is ready for `brev exec`, so poll `brev ls` first.
 
 ### 3.3 Rough throughput and budget
 
@@ -104,8 +117,8 @@ These are planning figures only. Measure your own numbers in Phase 0.
 | 3 Depth student | 512–2048 | 1–4 h | ~15 |
 | 4 Robustness | 2048–4096 | 1–3 h | ~15 |
 
-That totals roughly **60–120 GPU-hours** for the whole project. Multiply by your Daytona rate to get
-a budget. Set a monthly spending cap before you start.
+That totals roughly **60–120 GPU-hours** for the whole project. Multiply by your Brev rate (L40S is usually
+the cheapest RT-core option) to get a budget. Buy only that much credit up front.
 
 ---
 
@@ -207,10 +220,10 @@ Each phase ends with a **demo video + W&B report**. Don't move on until the exit
 
 ### Phase 0 — Setup and RL basics (week 1)
 - [ ] Read: *Spinning Up* (intro + PPO), and Sutton & Barto ch. 1–3 & 13 (skim)
-- [ ] Create a Daytona account, set an API key, set a spending cap
-- [ ] Build the base snapshot (§3.2). Record start-up time, steps/s and VRAM for 1k/4k/8k envs
-- [ ] Run the built-in `Isaac-Quadcopter-Direct-v0` with RSL-RL headless on Daytona; get W&B logging working
-- [ ] Write `launch.py` v0: create sandbox → run → upload → delete
+- [ ] Create a Brev account, add a limited amount of credit, create an API key
+- [ ] Set up the dev box and build the base image (§3.2). Record start-up time, steps/s and VRAM for 1k/4k/8k envs
+- [ ] Run the built-in `Isaac-Quadcopter-Direct-v0` with RSL-RL headless on Brev; get W&B logging working
+- [ ] Write `launch.py` v0: create instance → run → upload → delete
 - **Exit:** the built-in quadcopter task trains to convergence from one local command, and the checkpoint is on W&B/HF.
 
 ### Phase 1 — Own environment, goal reaching, no obstacles (week 2)
@@ -283,10 +296,12 @@ isaac-rl/
 │       └── agents/rsl_rl_ppo_cfg.py
 ├── scripts/
 │   ├── train.py  play.py  eval.py  distill.py
-│   └── daytona/
-│       ├── build_snapshot.py         # one-time base image/snapshot
-│       ├── launch.py                 # single run + sweeps
-│       └── reap.py                   # kill orphaned sandboxes
+│   └── brev/
+│       ├── install_isaac.sh          # Isaac Sim + Isaac Lab install (dev box + base image)
+│       ├── Dockerfile                # base image, pushed to GHCR
+│       ├── bootstrap.sh              # run-box startup script: pull base image
+│       ├── launch.py                 # single run + sweeps (wraps the brev CLI)
+│       └── reap.py                   # delete orphaned run boxes
 ├── configs/
 │   ├── exp/                          # one YAML per named experiment
 │   └── sweeps/
@@ -300,13 +315,13 @@ isaac-rl/
 
 | Risk | Mitigation |
 |------|-----------|
-| Isaac Sim install/start-up problems in the sandbox (EGL, Vulkan, drivers) | Fix them once in the snapshot; add a `smoke_test.py` (10 iterations) that runs at the start of every sandbox |
+| Isaac Sim install/start-up problems on the instance (EGL, Vulkan, drivers) | Fix them once in the base image; add a `smoke_test.py` (10 iterations) that runs at the start of every run box |
 | RTX cameras unavailable on H100 | Use ray-cast depth as the default; use RTX cards only for RTX-camera ablations and videos |
 | Reward hacking (e.g. hovering forever, flying around the map edges) | Per-term logging, a time penalty, bounds termination, and **watch videos every phase** |
 | Policy never finds the goal in dense clutter | Curriculum from empty to dense; dense progress reward; privileged teacher first |
-| Lost work when a sandbox dies | Continuous checkpoint upload; `--resume`; launcher verifies uploads before deleting |
-| Runaway cost | Spending cap, `auto_stop`, max runtime per run, nightly reaper |
-| API drift (Isaac Lab 2.x → 3.0, Daytona SDK) | Pin versions; isolate Isaac Lab–specific code; migrate in a separate branch |
+| Lost work when an instance dies or can't restart (no capacity) | Continuous checkpoint upload; `--resume`; launcher verifies uploads before deleting; code always in git |
+| Runaway cost (a forgotten dev box or run box) | Prepaid credits only, stop the dev box after each session, max runtime per run, reaper script |
+| API drift (Isaac Lab 2.x → 3.0, `brev` CLI) | Pin versions; isolate Isaac Lab–specific code; migrate in a separate branch |
 | Sim-to-sim gap (ray-cast vs RTX depth) | Phase 3b ablation; noise model on depth |
 
 ---
@@ -334,9 +349,10 @@ isaac-rl/
 
 ## 12. First week: concrete next steps
 
-1. Create Daytona + W&B (+ HF) accounts; put the API keys in a local `.env` (git-ignored).
-2. Start one RTX Pro 6000 sandbox by hand, pip-install the pinned Isaac Sim + Isaac Lab, and run
-   `Isaac-Quadcopter-Direct-v0` headless. Write down every command that worked.
-3. Turn those commands into `scripts/daytona/build_snapshot.py` and save the snapshot.
-4. Write `launch.py` v0 and reproduce step 2 from one local command.
+1. Create Brev + W&B (+ HF) accounts; put the API keys in a local `.env` (git-ignored). Add a small amount of
+   Brev credit to start.
+2. Create the dev box (`brev create isaac-rl-dev --gpu-name L40S`), run `scripts/brev/install_isaac.sh` on it,
+   and run `Isaac-Quadcopter-Direct-v0` headless. Write down every command that worked. Stop the box after.
+3. Turn those commands into `scripts/brev/Dockerfile`, build the base image and push it to GHCR.
+4. Write `launch.py` v0 and reproduce step 2 on a fresh run box from one local command.
 5. Scaffold `source/drone_nav` and start Phase 1.
