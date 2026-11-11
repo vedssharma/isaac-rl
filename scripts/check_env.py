@@ -14,13 +14,15 @@ from __future__ import annotations
 
 import argparse
 import os
+import shutil
+import subprocess
 import sys
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
 REQUIRED = {
-    "Daytona": ["DAYTONA_API_KEY"],
+    "Brev": ["BREV_API_KEY"],
     "W&B": ["WANDB_API_KEY", "WANDB_ENTITY", "WANDB_PROJECT"],
     "Hugging Face": ["HF_TOKEN", "HF_REPO_ID"],
 }
@@ -43,12 +45,17 @@ def check_vars() -> list[str]:
     return missing
 
 
-def check_daytona() -> str:
-    from daytona import Daytona, ListSandboxesQuery
-
-    client = Daytona()  # reads DAYTONA_API_KEY / DAYTONA_API_URL / DAYTONA_TARGET
-    sandboxes = list(client.list(ListSandboxesQuery(limit=50)))
-    return f"authenticated; {len(sandboxes)} sandbox(es) currently exist"
+def check_brev() -> str:
+    """The brev CLI has no Python SDK; check it is installed and signed in."""
+    if not shutil.which("brev"):
+        raise RuntimeError("brev CLI not found; install it (see docs/setup.md)")
+    result = subprocess.run(["brev", "ls"], capture_output=True, text=True, timeout=60)
+    if result.returncode != 0:
+        raise RuntimeError(
+            "brev ls failed; sign in with: brev login --api-key \"$BREV_API_KEY\" && brev refresh\n"
+            + (result.stderr or result.stdout).strip()[-300:]
+        )
+    return "CLI installed and signed in (brev ls works)"
 
 
 def check_wandb() -> str:
@@ -98,7 +105,7 @@ def main() -> int:
 
     if not args.offline:
         print("\nLive checks:")
-        checks = {"Daytona": check_daytona, "W&B": check_wandb, "Hugging Face": check_hf}
+        checks = {"Brev": check_brev, "W&B": check_wandb, "Hugging Face": check_hf}
         for service, fn in checks.items():
             if any(name in missing for name in REQUIRED[service]):
                 print(f"  skip    {service:<13} (missing variables)")
