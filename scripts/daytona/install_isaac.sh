@@ -18,6 +18,11 @@ WORKDIR="${WORKDIR:-$HOME}"
 
 export ACCEPT_EULA=Y
 export OMNI_KIT_ACCEPT_EULA=YES
+# Isaac Sim wheels are large (several GB in total) and pypi.nvidia.com can reset
+# connections mid-download. Be patient and retry; uv caches finished wheels, so
+# rerunning this script resumes where it stopped.
+export UV_HTTP_TIMEOUT="${UV_HTTP_TIMEOUT:-600}"
+export UV_HTTP_RETRIES="${UV_HTTP_RETRIES:-10}"
 
 echo "== GPU =="
 nvidia-smi --query-gpu=name,driver_version,memory.total --format=csv
@@ -32,7 +37,7 @@ fi
 echo "== Python 3.11 venv via uv =="
 command -v uv >/dev/null || curl -LsSf https://astral.sh/uv/install.sh | sh
 export PATH="$HOME/.local/bin:$PATH"
-uv venv --python 3.11 "$VENV"
+[ -d "$VENV" ] || uv venv --python 3.11 "$VENV"
 # shellcheck disable=SC1091
 source "$VENV/bin/activate"
 uv pip install --upgrade pip
@@ -41,6 +46,12 @@ echo "== torch (CUDA 12.8 wheels) =="
 uv pip install "torch==${TORCH_VERSION}" "torchvision==${TORCHVISION_VERSION}" --index-url "$TORCH_INDEX"
 
 echo "== Isaac Sim + Isaac Lab =="
+# Real isaacsim-* wheels live only on pypi.nvidia.com (PyPI has placeholder sdists),
+# so the NVIDIA index is required. Fail early with a clear message if it's blocked.
+if ! curl -sS --max-time 30 -o /dev/null https://pypi.nvidia.com/isaacsim-core/; then
+  echo "ERROR: cannot reach https://pypi.nvidia.com. Check the sandbox's network/egress settings." >&2
+  exit 1
+fi
 uv pip install "isaaclab[isaacsim,all]==${ISAACLAB_VERSION}" --extra-index-url https://pypi.nvidia.com
 
 echo "== Isaac Lab repo (for scripts/reinforcement_learning/*) =="
