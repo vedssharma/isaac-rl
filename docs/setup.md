@@ -25,7 +25,7 @@ Do this before starting your first GPU sandbox. The whole project is budgeted at
 
 ```bash
 hf auth login            # or: export HF_TOKEN=...
-hf repo create <your-hf-username>/isaac-rl-drone-nav --private
+hf repos create <your-hf-username>/isaac-rl-drone-nav --private
 ```
 
 ## 4. Fill in `.env` and check it
@@ -50,9 +50,39 @@ It never prints a full secret.
 
 ## Next: step 2
 
-Start one RTX Pro 6000 sandbox by hand from the `daytona-gpu` snapshot and run
-[`scripts/daytona/install_isaac.sh`](../scripts/daytona/install_isaac.sh) inside it. Write down anything you
-had to change. Those notes become `build_snapshot.py` in step 3.
+### Daytona Tier 1/2 network limits
+
+On Daytona Tier 1 and 2, sandboxes can only reach the hosts on
+[Daytona's allow-list](https://github.com/daytonaio/sandbox-network-whitelist/blob/main/whitelist.yaml).
+PyPI, PyTorch, GitHub, Hugging Face and AWS S3 (path-style URLs) are on it. NVIDIA's package index
+(`pypi.nvidia.com`), `nvcr.io` and W&B are not. Tier 3 (a $500 top-up) lifts this. Until then:
+
+| Blocked | Workaround |
+|---------|-----------|
+| Isaac Sim wheels on `pypi.nvidia.com` | A GitHub Action copies them once into a private HF repo; the install script pulls them from there |
+| Isaac asset URL (virtual-hosted S3) | The install script uses the path-style S3 URL for the same bucket (`--kit_args` in the train command) |
+| W&B logging | Log to TensorBoard and `hf upload` the logs and checkpoints to your HF repo |
+
+**One-time wheel mirror** (takes a while; the wheels total several GB):
+
+1. GitHub repo → Settings → Secrets and variables → Actions → add secret `HF_TOKEN` (write access).
+2. Actions → **Mirror Isaac Sim wheels to Hugging Face** → Run workflow, with a repo name such as
+   `<hf-username>/isaacsim-wheels`. It creates the repo as private. Keep it private: the wheels are under
+   NVIDIA's license and are mirrored only for this project's own use.
+
+### Install in a sandbox
+
+Start one GPU sandbox by hand from the `daytona-gpu` snapshot (it is always ephemeral, so set auto-stop to 0 or
+high and delete it yourself when done). Then, inside it:
+
+```bash
+git clone https://github.com/vedssharma/isaac-rl.git && cd isaac-rl
+export HF_TOKEN=...                                   # read access is enough here
+export ISAACSIM_WHEELS_REPO=<hf-username>/isaacsim-wheels
+bash scripts/daytona/install_isaac.sh
+```
+
+Write down anything you had to change. Those notes become `build_snapshot.py` in step 3.
 
 Pinned versions (Isaac Lab needs Python 3.11 for 2.3.x):
 

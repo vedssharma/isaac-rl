@@ -73,7 +73,7 @@ def check_hf() -> str:
         api.repo_info(repo_id, repo_type="model")
         repo_note = f"repo {repo_id} exists"
     except RepositoryNotFoundError:
-        repo_note = f"repo {repo_id} not found yet (create it with: hf repo create {repo_id} --private)"
+        repo_note = f"repo {repo_id} not found yet (create it with: hf repos create {repo_id} --private)"
     return f"logged in as {who.get('name')}; {repo_note}"
 
 
