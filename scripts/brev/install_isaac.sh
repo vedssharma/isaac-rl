@@ -53,10 +53,23 @@ if [ ! -d "$WORKDIR/IsaacLab" ]; then
   git clone --depth 1 --branch "$ISAACLAB_GIT_TAG" https://github.com/isaac-sim/IsaacLab.git "$WORKDIR/IsaacLab"
 fi
 
+echo "== Isaac Lab sub-packages (isaaclab_rl / _tasks / _assets) =="
+# The isaaclab 2.3.2.post1 wheel ships only the core 'isaaclab' package; its [all] extra pulls in
+# rsl-rl/skrl/sb3 but NOT isaaclab_rl, isaaclab_tasks or isaaclab_assets, which train.py imports.
+# Install them editable from the tag-matched checkout. This also moves rsl-rl-lib 3.0.1 -> 3.1.2,
+# the version the v2.3.2 scripts pin.
+uv pip install \
+  -e "$WORKDIR/IsaacLab/source/isaaclab_assets" \
+  -e "$WORKDIR/IsaacLab/source/isaaclab_tasks" \
+  -e "$WORKDIR/IsaacLab/source/isaaclab_rl[rsl_rl]"
+
+echo "== Experiment tracking =="
+uv pip install "wandb==0.31.0"
+
 echo "== Versions =="
 python - <<'PY'
 import importlib.metadata as md
-for p in ["isaacsim", "isaaclab", "isaaclab_rl", "rsl-rl-lib", "torch"]:
+for p in ["isaacsim", "isaaclab", "isaaclab-rl", "isaaclab-tasks", "isaaclab-assets", "rsl-rl-lib", "torch"]:
     try:
         print(f"{p:12s} {md.version(p)}")
     except md.PackageNotFoundError:
@@ -69,11 +82,13 @@ cat <<MSG
 Installed. Smoke test (first start builds shader caches and can take several minutes):
 
   source $VENV/bin/activate
+  export PYTHONUNBUFFERED=1   # Kit hard-exits on close and drops buffered stdout when logging to a file
   cd $WORKDIR/IsaacLab
   python scripts/reinforcement_learning/rsl_rl/train.py \\
       --task Isaac-Quadcopter-Direct-v0 --headless --num_envs 4096 --max_iterations 10
 
-Then a full run with W&B (export WANDB_API_KEY on the instance first):
+Then a full run with W&B. Export WANDB_API_KEY, WANDB_PROJECT and WANDB_USERNAME (your W&B
+entity; RSL-RL reads the entity from WANDB_USERNAME, not WANDB_ENTITY) on the instance first:
 
   python scripts/reinforcement_learning/rsl_rl/train.py \\
       --task Isaac-Quadcopter-Direct-v0 --headless --num_envs 4096 \\
