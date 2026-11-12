@@ -52,11 +52,15 @@ echo "== Isaac Lab repo (for scripts/reinforcement_learning/*) =="
 if [ ! -d "$WORKDIR/IsaacLab" ]; then
   git clone --depth 1 --branch "$ISAACLAB_GIT_TAG" https://github.com/isaac-sim/IsaacLab.git "$WORKDIR/IsaacLab"
 fi
+# The isaaclab pip wheel doesn't make isaaclab_rl / isaaclab_tasks importable on
+# their own, and the repo's train.py needs them. Install the repo's extensions
+# (editable) with RSL-RL, the standard setup for running Isaac Lab's scripts.
+(cd "$WORKDIR/IsaacLab" && ./isaaclab.sh --install rsl_rl)
 
 echo "== Versions =="
 python - <<'PY'
 import importlib.metadata as md
-for p in ["isaacsim", "isaaclab", "isaaclab_rl", "rsl-rl-lib", "torch"]:
+for p in ["isaacsim", "isaaclab", "isaaclab_rl", "isaaclab_tasks", "rsl-rl-lib", "torch"]:
     try:
         print(f"{p:12s} {md.version(p)}")
     except md.PackageNotFoundError:
