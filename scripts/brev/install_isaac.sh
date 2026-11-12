@@ -52,16 +52,10 @@ echo "== Isaac Lab repo (for scripts/reinforcement_learning/*) =="
 if [ ! -d "$WORKDIR/IsaacLab" ]; then
   git clone --depth 1 --branch "$ISAACLAB_GIT_TAG" https://github.com/isaac-sim/IsaacLab.git "$WORKDIR/IsaacLab"
 fi
-
-echo "== Isaac Lab sub-packages (isaaclab_rl / _tasks / _assets) =="
-# The isaaclab 2.3.2.post1 wheel ships only the core 'isaaclab' package; its [all] extra pulls in
-# rsl-rl/skrl/sb3 but NOT isaaclab_rl, isaaclab_tasks or isaaclab_assets, which train.py imports.
-# Install them editable from the tag-matched checkout. This also moves rsl-rl-lib 3.0.1 -> 3.1.2,
-# the version the v2.3.2 scripts pin.
-uv pip install \
-  -e "$WORKDIR/IsaacLab/source/isaaclab_assets" \
-  -e "$WORKDIR/IsaacLab/source/isaaclab_tasks" \
-  -e "$WORKDIR/IsaacLab/source/isaaclab_rl[rsl_rl]"
+# The isaaclab pip wheel doesn't make isaaclab_rl / isaaclab_tasks importable on
+# their own, and the repo's train.py needs them. Install the repo's extensions
+# (editable) with RSL-RL, the standard setup for running Isaac Lab's scripts.
+(cd "$WORKDIR/IsaacLab" && ./isaaclab.sh --install rsl_rl)
 
 echo "== Experiment tracking =="
 uv pip install "wandb==0.31.0"
@@ -69,11 +63,11 @@ uv pip install "wandb==0.31.0"
 echo "== Versions =="
 python - <<'PY'
 import importlib.metadata as md
-for p in ["isaacsim", "isaaclab", "isaaclab-rl", "isaaclab-tasks", "isaaclab-assets", "rsl-rl-lib", "torch"]:
+for p in ["isaacsim", "isaaclab", "isaaclab_rl", "isaaclab_tasks", "isaaclab_assets", "rsl-rl-lib", "wandb", "torch"]:
     try:
-        print(f"{p:12s} {md.version(p)}")
+        print(f"{p:16s} {md.version(p)}")
     except md.PackageNotFoundError:
-        print(f"{p:12s} (not installed)")
+        print(f"{p:16s} (not installed)")
 import torch; print("cuda ok:", torch.cuda.is_available(), torch.cuda.get_device_name(0) if torch.cuda.is_available() else "")
 PY
 
