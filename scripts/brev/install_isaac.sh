@@ -57,14 +57,17 @@ fi
 # (editable) with RSL-RL, the standard setup for running Isaac Lab's scripts.
 (cd "$WORKDIR/IsaacLab" && ./isaaclab.sh --install rsl_rl)
 
+echo "== Experiment tracking =="
+uv pip install "wandb==0.31.0"
+
 echo "== Versions =="
 python - <<'PY'
 import importlib.metadata as md
-for p in ["isaacsim", "isaaclab", "isaaclab_rl", "isaaclab_tasks", "rsl-rl-lib", "torch"]:
+for p in ["isaacsim", "isaaclab", "isaaclab_rl", "isaaclab_tasks", "isaaclab_assets", "rsl-rl-lib", "wandb", "torch"]:
     try:
-        print(f"{p:12s} {md.version(p)}")
+        print(f"{p:16s} {md.version(p)}")
     except md.PackageNotFoundError:
-        print(f"{p:12s} (not installed)")
+        print(f"{p:16s} (not installed)")
 import torch; print("cuda ok:", torch.cuda.is_available(), torch.cuda.get_device_name(0) if torch.cuda.is_available() else "")
 PY
 
@@ -73,11 +76,13 @@ cat <<MSG
 Installed. Smoke test (first start builds shader caches and can take several minutes):
 
   source $VENV/bin/activate
+  export PYTHONUNBUFFERED=1   # Kit hard-exits on close and drops buffered stdout when logging to a file
   cd $WORKDIR/IsaacLab
   python scripts/reinforcement_learning/rsl_rl/train.py \\
       --task Isaac-Quadcopter-Direct-v0 --headless --num_envs 4096 --max_iterations 10
 
-Then a full run with W&B (export WANDB_API_KEY on the instance first):
+Then a full run with W&B. Export WANDB_API_KEY, WANDB_PROJECT and WANDB_USERNAME (your W&B
+entity; RSL-RL reads the entity from WANDB_USERNAME, not WANDB_ENTITY) on the instance first:
 
   python scripts/reinforcement_learning/rsl_rl/train.py \\
       --task Isaac-Quadcopter-Direct-v0 --headless --num_envs 4096 \\
