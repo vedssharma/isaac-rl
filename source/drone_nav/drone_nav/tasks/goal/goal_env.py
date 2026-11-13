@@ -100,6 +100,8 @@ class DroneNavGoalEnvCfg(DirectRLEnvCfg):
     # Model mismatch for evaluation: the true mass and inertia are scaled by this, but thrust scaling and the rate
     # controller keep using the nominal values (a heavier drone than the policy was trained on).
     mass_scale = 1.0
+    # Like mass_scale, but only the rotational inertia: stresses the attitude channel alone, not the thrust.
+    inertia_scale = 1.0
     # Speed cap. The stock Crazyflie has no aerodynamic drag, and the Phase 1 baseline flew at 10 m/s.
     # Linear drag sets a physical top speed (horizontal, at full thrust); None turns it off. The over-speed
     # reward term then makes the policy cruise a little above speed_limit (about 3.25 m/s with the weights below).
@@ -159,10 +161,11 @@ class DroneNavGoalEnv(DirectRLEnv):
         self._rate_cmd = torch.zeros(n, 3, device=dev)
         if self.cfg.action_type not in ("thrust_torque", "ctbr"):
             raise ValueError(f"action_type must be 'thrust_torque' or 'ctbr', not {self.cfg.action_type!r}")
+        all_envs = torch.arange(n, device="cpu")  # PhysX views take CPU indices
         if self.cfg.mass_scale != 1.0:
-            all_envs = torch.arange(n, device="cpu")  # PhysX views take CPU indices
             view.set_masses(view.get_masses() * self.cfg.mass_scale, all_envs)
-            view.set_inertias(view.get_inertias() * self.cfg.mass_scale, all_envs)
+        if self.cfg.mass_scale * self.cfg.inertia_scale != 1.0:
+            view.set_inertias(view.get_inertias() * self.cfg.mass_scale * self.cfg.inertia_scale, all_envs)
         self._weights = self.cfg.rewards.to_dict()
         self._drag_k = (
             mdp.linear_drag_coefficient(self._robot_weight, self.cfg.thrust_to_weight, self.cfg.drag_terminal_speed)
