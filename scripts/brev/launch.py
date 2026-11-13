@@ -4,7 +4,7 @@
     python scripts/brev/launch.py --run-name p0-quadcopter-launch-s42 -- \\
         --task Isaac-Quadcopter-Direct-v0 --num_envs 4096 --seed 42
 
-Everything after `--` goes to scripts/train.py. The launcher adds `--headless`, `--logger wandb` and
+Everything after `--` goes to scripts/train.py (or scripts/play.py with `--script play`). The launcher adds `--headless`, `--logger wandb` and
 `--run_name <run name>` itself. One run is:
 
 1. Preflight: keys in .env, `brev` signed in, the commit to run is pushed to GitHub.
@@ -80,7 +80,13 @@ def parse_args(argv: list[str]) -> tuple[argparse.Namespace, list[str]]:
     )
     p.add_argument("--boot-timeout-min", type=float, default=12, help="per instance type, to reach RUNNING (12)")
     p.add_argument("--max-setup-min", type=float, default=40, help="limit for the install (default 40)")
-    p.add_argument("--max-train-min", type=float, default=120, help="limit for train.py (default 120)")
+    p.add_argument("--max-train-min", type=float, default=120, help="limit for the script (default 120)")
+    p.add_argument(
+        "--script",
+        choices=("train", "play"),
+        default="train",
+        help="train: scripts/train.py, verified on W&B/HF. play: scripts/play.py (evaluation), which must exit 0",
+    )
     p.add_argument("--keep", action="store_true", help="don't delete/stop the instance at the end")
     p.add_argument("--quiet", action="store_true", help="print only progress lines; the full log is still saved")
     p.add_argument("--dry-run", action="store_true", help="run the preflight checks and print the plan, nothing else")
@@ -97,6 +103,16 @@ def flag_value(args: list[str], flag: str) -> str | None:
         if a.startswith(flag + "="):
             return a.split("=", 1)[1]
     return None
+
+
+def build_play_args(play_args: list[str]) -> list[str]:
+    """play.py needs a task and a checkpoint source; it always runs headless here."""
+    args = list(play_args)
+    if flag_value(args, "--task") is None:
+        raise SystemExit("play.py needs --task and --wandb_run <id>, e.g.: launch.py --script play -- --task ...")
+    if "--headless" not in args:
+        args.append("--headless")
+    return args
 
 
 def build_train_args(train_args: list[str], run_name: str) -> list[str]:
@@ -285,14 +301,15 @@ class Launch:
         script = f"""set -euo pipefail
 {exports}
 command -v git >/dev/null || {{ sudo apt-get -o DPkg::Lock::Timeout=900 update -qq && sudo apt-get -o DPkg::Lock::Timeout=900 install -y -qq git; }}
-if pgrep -f '[s]cripts/train.py' >/dev/null; then echo 'another train.py is already running here' >&2; exit 4; fi
+if pgrep -f '[s]cripts/(train|play).py' >/dev/null; then echo 'another job is already running here' >&2; exit 4; fi
 mkdir -p {self.remote_run_dir}
 [ -d {clone}/.git ] || git clone --quiet {q(self.clone_url)} {clone}
 git -C {clone} fetch --quiet origin
 git -C {clone} checkout --quiet --force --detach {self.sha}
 git -C {clone} clean -fdq
 cd {clone}
-nohup setsid bash scripts/brev/run_remote.sh {self.remote_run_dir} {int(self.args.max_train_min)} \\
+RUN_SCRIPT=scripts/{self.args.script}.py nohup setsid bash scripts/brev/run_remote.sh \\
+    {self.remote_run_dir} {int(self.args.max_train_min)} \\
     {" ".join(q(a) for a in self.train_args)} > {self.remote_run_dir}/run.log 2>&1 < /dev/null &
 echo "started pid $!"
 """
@@ -366,7 +383,7 @@ echo "started pid $!"
             return
         # Signal only run_remote.sh's `timeout`: it passes SIGINT on to train.py once (and SIGKILLs it if it
         # hangs). Signalling python directly as well would interrupt its W&B cleanup a second time.
-        ssh(self.name, "pkill -INT -f '^timeout .*[s]cripts/train.py' || true", timeout=60)
+        ssh(self.name, "pkill -INT -f '^timeout .*[s]cripts/(train|play).py' || true", timeout=60)
         end = time.time() + wait_s
         while time.time() < end:
             r = ssh(self.name, f"cat {self.remote_run_dir}/exit_code", timeout=60)
@@ -497,8 +514,8 @@ echo "started pid $!"
         self.record["price_per_hour"] = price
         self.record["cost_usd"] = round(hours * price, 2) if price is not None else None
         log(f"box time {hours * 60:.0f} min" + (f", about ${hours * price:.2f}" if price else ""))
-        if not self.started:
-            return  # train.py never ran, so there is no W&B run to annotate
+        if not self.started or self.args.script != "train":
+            return  # no W&B run of our own to annotate (train.py never ran, or this was play.py)
         try:
             import wandb
 
@@ -536,8 +553,14 @@ echo "started pid $!"
             # skip the teardown or the record.
             self.record["exit_code"] = self.exit_code
             if self.exit_code == 0:
-                verified = bool(self.safely("verify", self.verify))
-            if not verified and self.started and self.safely("instance lookup", get_instance, self.name):
+                # play.py writes its own results (W&B summary, HF); exiting 0 is its success.
+                verified = self.args.script == "play" or bool(self.safely("verify", self.verify))
+            if (
+                not verified
+                and self.started
+                and self.args.script == "train"
+                and self.safely("instance lookup", get_instance, self.name)
+            ):
                 pulled = bool(self.safely("copy back", self.pull_run_dir))
             self.record["verified"] = verified
             self.record["pulled_run_dir"] = pulled
@@ -561,13 +584,16 @@ def main(argv: list[str]) -> int:
         brevcli.run_box_name(args.run_name)  # validates the name early
     except ValueError as e:
         raise SystemExit(str(e))
-    train_args = build_train_args(train_args, args.run_name)
+    if args.script == "train":
+        train_args = build_train_args(train_args, args.run_name)
+    else:
+        train_args = build_play_args(train_args)
     load_env(args.env_file)
     sha, url = resolve_commit(args.ref, args.allow_dirty)
     brev("ls")  # signed in?
     launch = Launch(args, train_args, sha, url)
     log(f"run {launch.tag}: {sha[:10]} on {launch.name}{' (reused)' if launch.reuse else ''}")
-    log(f"train.py {' '.join(train_args)}")
+    log(f"{args.script}.py {' '.join(train_args)}")
     if args.dry_run:
         log("dry run; nothing was created")
         return 0

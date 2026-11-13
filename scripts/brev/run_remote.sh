@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 # Runs ON the Brev instance, started in the background by scripts/brev/launch.py from a clone of this repo
 # checked out at the run's git SHA. Installs Isaac Sim / Isaac Lab if they aren't there yet, then runs
-# scripts/train.py. Secrets (WANDB_*, HF_*) arrive as environment variables; nothing is written to disk.
+# scripts/train.py, or $RUN_SCRIPT (e.g. scripts/play.py). Secrets (WANDB_*, HF_*) arrive as environment
+# variables; nothing is written to disk.
 #
-#   bash scripts/brev/run_remote.sh <run dir> <max train minutes> <train.py args...>
+#   [RUN_SCRIPT=scripts/play.py] bash scripts/brev/run_remote.sh <run dir> <max minutes> <script args...>
 #
 # Writes <run dir>/phase (setup | train | done) and, when finished, <run dir>/exit_code:
 #   0 = training succeeded, 124 = hit the time limit, 90 = install failed, anything else = train.py's code.
@@ -44,7 +45,8 @@ fi
 source "$VENV/bin/activate"
 cd "$REPO_DIR"
 echo train > "$RUN_DIR/phase"
-echo "[run_remote] $(date -u +%FT%TZ) python scripts/train.py $*"
+RUN_SCRIPT="${RUN_SCRIPT:-scripts/train.py}"
+echo "[run_remote] $(date -u +%FT%TZ) python $RUN_SCRIPT $*"
 # On the time limit, SIGINT lets train.py mark the W&B run failed and flush it; SIGKILL 3 minutes later if not.
-timeout --signal=INT --kill-after=180 "${MAX_TRAIN_MIN}m" python scripts/train.py "$@"
+timeout --signal=INT --kill-after=180 "${MAX_TRAIN_MIN}m" python "$RUN_SCRIPT" "$@"
 finish $?
