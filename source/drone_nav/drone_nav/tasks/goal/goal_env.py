@@ -19,6 +19,7 @@ from isaaclab.terrains import TerrainImporterCfg
 from isaaclab.utils import configclass
 from isaaclab.utils.math import quat_from_euler_xyz, subtract_frame_transforms
 
+from drone_nav.control.rate_controller import rate_command, rate_controller_torque
 from drone_nav.mdp import goal as mdp
 
 from isaaclab_assets import CRAZYFLIE_CFG  # isort: skip
@@ -90,7 +91,15 @@ class DroneNavGoalEnvCfg(DirectRLEnvCfg):
     # robot and action scaling (as Isaac-Quadcopter-Direct-v0)
     robot: ArticulationCfg = CRAZYFLIE_CFG.replace(prim_path="/World/envs/env_.*/Robot")
     thrust_to_weight = 1.9
-    moment_scale = 0.01
+    moment_scale = 0.01  # N m: the torque action's scale, and the rate controller's torque limit
+    # Action interface (PLAN.md §4.1): "thrust_torque" = collective thrust + body torques (v1);
+    # "ctbr" = collective thrust + body rates, tracked by a P rate loop every physics substep (v2).
+    action_type: str = "thrust_torque"
+    max_body_rates = (6.0, 6.0, 3.0)  # rad/s at action +-1 (roll, pitch, yaw), ctbr only
+    rate_kp = (25.0, 25.0, 15.0)  # 1/s: rate-error time constants of 40 / 40 / 67 ms, ctbr only
+    # Model mismatch for evaluation: the true mass and inertia are scaled by this, but thrust scaling and the rate
+    # controller keep using the nominal values (a heavier drone than the policy was trained on).
+    mass_scale = 1.0
     # Speed cap. The stock Crazyflie has no aerodynamic drag, and the Phase 1 baseline flew at 10 m/s.
     # Linear drag sets a physical top speed (horizontal, at full thrust); None turns it off. The over-speed
     # reward term then makes the policy cruise a little above speed_limit (about 3.25 m/s with the weights below).
@@ -110,6 +119,13 @@ class DroneNavGoalEnvCfg(DirectRLEnvCfg):
     obs_goal_dist_clip = 10.0
 
     rewards: RewardWeightsCfg = RewardWeightsCfg()
+
+
+@configclass
+class DroneNavGoalCTBREnvCfg(DroneNavGoalEnvCfg):
+    """Drone-Nav-Goal-CTBR-v0: the same task with collective thrust + body-rate actions."""
+
+    action_type = "ctbr"
 
 
 class DroneNavGoalEnv(DirectRLEnv):
@@ -134,9 +150,19 @@ class DroneNavGoalEnv(DirectRLEnv):
         self._episode_sums = {k: torch.zeros(n, device=dev) for k in mdp.REWARD_TERMS}
 
         self._body_id = self._robot.find_bodies("body")[0]
-        robot_mass = self._robot.root_physx_view.get_masses()[0].sum()
+        view = self._robot.root_physx_view
+        robot_mass = view.get_masses()[0].sum()
         gravity = torch.tensor(self.sim.cfg.gravity, device=dev).norm()
-        self._robot_weight = (robot_mass * gravity).item()
+        self._robot_weight = (robot_mass * gravity).item()  # nominal: what the thrust command is scaled by
+        # Nominal principal inertia of the body link, for the rate controller (PhysX stores 3x3 row-major).
+        self._inertia_diag = view.get_inertias()[0, self._body_id[0], [0, 4, 8]].to(dev)
+        self._rate_cmd = torch.zeros(n, 3, device=dev)
+        if self.cfg.action_type not in ("thrust_torque", "ctbr"):
+            raise ValueError(f"action_type must be 'thrust_torque' or 'ctbr', not {self.cfg.action_type!r}")
+        if self.cfg.mass_scale != 1.0:
+            all_envs = torch.arange(n, device="cpu")  # PhysX views take CPU indices
+            view.set_masses(view.get_masses() * self.cfg.mass_scale, all_envs)
+            view.set_inertias(view.get_inertias() * self.cfg.mass_scale, all_envs)
         self._weights = self.cfg.rewards.to_dict()
         self._drag_k = (
             mdp.linear_drag_coefficient(self._robot_weight, self.cfg.thrust_to_weight, self.cfg.drag_terminal_speed)
@@ -165,10 +191,21 @@ class DroneNavGoalEnv(DirectRLEnv):
         self._prev_actions = self._actions.clone()
         self._actions = actions.clone().clamp(-1.0, 1.0)
         self._thrust[:, 0, 2] = self.cfg.thrust_to_weight * self._robot_weight * (self._actions[:, 0] + 1.0) / 2.0
-        self._moment[:, 0, :] = self.cfg.moment_scale * self._actions[:, 1:]
+        if self.cfg.action_type == "ctbr":
+            self._rate_cmd = rate_command(self._actions[:, 1:], self.cfg.max_body_rates)
+        else:
+            self._moment[:, 0, :] = self.cfg.moment_scale * self._actions[:, 1:]
 
     def _apply_action(self):
-        # Called every physics substep, so drag uses the current velocity. Forces are in the body frame.
+        # Called every physics substep, so drag and the rate loop use the current velocities. Body frame.
+        if self.cfg.action_type == "ctbr":
+            self._moment[:, 0, :] = rate_controller_torque(
+                self._rate_cmd,
+                self._robot.data.root_ang_vel_b,
+                self._inertia_diag,
+                self.cfg.rate_kp,
+                self.cfg.moment_scale,
+            )
         forces = self._thrust
         if self._drag_k:
             forces = forces + mdp.drag_force(self._robot.data.root_lin_vel_b, self._drag_k).unsqueeze(1)
@@ -253,6 +290,7 @@ class DroneNavGoalEnv(DirectRLEnv):
         origins = self._terrain.env_origins[env_ids]
         self._actions[env_ids] = 0.0
         self._prev_actions[env_ids] = 0.0
+        self._rate_cmd[env_ids] = 0.0
         for value in self._episode_sums.values():
             value[env_ids] = 0.0
 

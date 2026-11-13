@@ -14,8 +14,9 @@ Based on IsaacLab v2.3.2 scripts/reinforcement_learning/rsl_rl/play.py, with the
   per-episode log (extras["log"]). The initial episode-length spread used for training is undone, so every
   evaluated episode gets the full time limit.
 - --video records env 0 for --video_length steps. Drone-Nav tasks point the viewer at env 0's drone.
-- Results go to logs/play/<run>/eval.json. With --wandb_run they are also written to that W&B run's
-  summary (eval/*), and the video and eval.json are uploaded next to its checkpoint on Hugging Face.
+- Results go to logs/play/<run>/<eval_name>.json. With --wandb_run they are also written to that W&B run's
+  summary (<eval_name>/*), and the video and json are uploaded next to its checkpoint on Hugging Face. Hydra
+  overrides (e.g. env.mass_scale=1.2) set the evaluation condition; give each condition its own --eval_name.
 
     python scripts/play.py --task Drone-Nav-Goal-v0 --headless --wandb_run <run id> --video
 """
@@ -46,10 +47,17 @@ src.add_argument("--checkpoint_path", type=str, help="A local checkpoint file in
 parser.add_argument("--episodes", type=int, default=1000, help="Evaluate until this many episodes have ended.")
 parser.add_argument("--video", action="store_true", default=False, help="Record a video of env 0.")
 parser.add_argument("--video_length", type=int, default=1000, help="Length of the video (in env steps).")
-parser.add_argument("--hf_upload", choices=("yes", "no"), default="yes", help="Upload eval.json and the video to HF.")
+parser.add_argument("--hf_upload", choices=("yes", "no"), default="yes", help="Upload the results and video to HF.")
+parser.add_argument(
+    "--eval_name",
+    default="eval",
+    help="Name for this evaluation: W&B summary keys <name>/*, <name>.json, videos/<name>/. Use one per condition, "
+    "e.g. eval_mass1.2 with the Hydra override env.mass_scale=1.2.",
+)
 cli_args.add_rsl_rl_args(parser)
 AppLauncher.add_app_launcher_args(parser)
 args_cli, hydra_args = parser.parse_known_args()
+HYDRA_ARGS = list(hydra_args)
 if args_cli.video:
     args_cli.enable_cameras = True
 sys.argv = [sys.argv[0]] + hydra_args
@@ -137,8 +145,8 @@ def print_summary(summary: dict) -> None:
             print(f"  {key:<40} {value['mean']:9.3f}     (n={value['n']})")
 
 
-def upload_results(out_dir: Path, run) -> None:
-    """eval.json and videos next to the run's checkpoint on HF (from the run's hf_url); never raises."""
+def upload_results(out_dir: Path, run, name: str) -> None:
+    """<name>.json and videos/<name>/ next to the run's checkpoint on HF (from the run's hf_url); never raises."""
     repo_id, token, hf_url = os.environ.get("HF_REPO_ID"), os.environ.get("HF_TOKEN"), run.summary.get("hf_url")
     if not (repo_id and token and hf_url):
         print("[WARN] No HF_REPO_ID / HF_TOKEN / hf_url in the run summary; skipping the HF upload.")
@@ -152,8 +160,8 @@ def upload_results(out_dir: Path, run) -> None:
             repo_type="model",
             folder_path=str(out_dir),
             path_in_repo=path_in_repo,
-            allow_patterns=["eval.json", "videos/*/*.mp4"],
-            commit_message=f"{run.name}: evaluation",
+            allow_patterns=[f"{name}.json", f"videos/{name}/*.mp4"],
+            commit_message=f"{run.name}: evaluation {name}",
         )
         print(f"[INFO] Uploaded the evaluation to https://huggingface.co/{repo_id}/tree/main/{path_in_repo}")
     except Exception:
@@ -183,7 +191,7 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     if args_cli.video:
         env = gym.wrappers.RecordVideo(
             env,
-            video_folder=str(out_dir / "videos" / "play"),
+            video_folder=str(out_dir / "videos" / args_cli.eval_name),
             step_trigger=lambda step: step == 0,
             video_length=args_cli.video_length,
             name_prefix=f"play-{ckpt.stem}",
@@ -218,24 +226,34 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
             print(f"[INFO] step {steps}: {episodes}/{args_cli.episodes} episodes")
 
     summary = summarize(logs, args_cli.episodes)
-    summary.update({"checkpoint": str(ckpt.name), "task": args_cli.task, "seed": agent_cfg.seed, "steps": steps})
+    summary.update(
+        {
+            "name": args_cli.eval_name,
+            "checkpoint": str(ckpt.name),
+            "task": args_cli.task,
+            "seed": agent_cfg.seed,
+            "steps": steps,
+            "overrides": HYDRA_ARGS,
+        }
+    )
     if run is not None:
         summary["wandb_run"] = run.path if isinstance(run.path, str) else "/".join(run.path)
     print_summary(summary)
-    (out_dir / "eval.json").write_text(json.dumps(summary, indent=2) + "\n")
-    print(f"[INFO] Wrote {out_dir / 'eval.json'}")
+    result_file = out_dir / f"{args_cli.eval_name}.json"
+    result_file.write_text(json.dumps(summary, indent=2) + "\n")
+    print(f"[INFO] Wrote {result_file}")
 
     env.close()  # finishes writing a video that is still recording
     if run is not None:
         flat = {}
         for key, value in summary.items():
             if isinstance(value, dict):
-                flat[f"eval/{key}"] = value.get("rate", value.get("mean"))
-        flat["eval/episodes"] = summary["episodes"]
+                flat[f"{args_cli.eval_name}/{key}"] = value.get("rate", value.get("mean"))
+        flat[f"{args_cli.eval_name}/episodes"] = summary["episodes"]
         run.summary.update(flat)
-        print(f"[INFO] Wrote eval/* to the W&B summary of {run.url}")
+        print(f"[INFO] Wrote {args_cli.eval_name}/* to the W&B summary of {run.url}")
         if args_cli.hf_upload == "yes":
-            upload_results(out_dir, run)
+            upload_results(out_dir, run, args_cli.eval_name)
 
 
 if __name__ == "__main__":
