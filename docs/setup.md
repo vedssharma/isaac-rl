@@ -120,3 +120,59 @@ Pinned versions (Isaac Lab needs Python 3.11 for 2.3.x):
 | wandb | 0.31.0 |
 | huggingface-hub | 2.4.0 |
 | brev CLI | record the version from `brev --version` |
+
+## 7. Launching runs from your laptop
+
+[`scripts/brev/launch.py`](../scripts/brev/launch.py) runs one training job on a fresh Brev instance and
+deletes the instance when it's done. Nothing has to be set up on the instance first:
+
+```bash
+source .venv/bin/activate
+git push                                   # the instance clones the commit you're on from GitHub
+python scripts/brev/launch.py --run-name p0-quadcopter-launch-s42 --quiet -- \
+    --task Isaac-Quadcopter-Direct-v0 --num_envs 4096 --seed 42
+```
+
+Everything after `--` goes to `scripts/train.py`. The launcher adds `--headless`, `--logger wandb` and
+`--run_name`. One run:
+
+1. **Preflight:** the keys in `.env` are set, `brev` is signed in, there are no uncommitted changes, and the
+   commit is pushed.
+2. **Instance:** `brev create isaac-rl-<run name>-<UTC yymmddHHMM>`, trying each type in `--types` in order
+   (default: Nebius L40S, then Crusoe L40S, then AWS `g6e.2xlarge`).
+3. **Job:** over ssh, clones this repo at that exact commit into `~/launch/isaac-rl` and starts
+   [`scripts/brev/run_remote.sh`](../scripts/brev/run_remote.sh) in the background. It runs
+   `install_isaac.sh` if Isaac Lab isn't installed yet (about 5 minutes on a 16-vCPU box), then `train.py`.
+   The W&B and HF keys are sent as environment variables over ssh and never written to the instance's disk.
+4. **Log:** streamed to the terminal (`--quiet` shows only progress lines) and saved in full to
+   `logs/launch/<run>/run.log`.
+5. **Check:** the W&B run must be `finished`, and the final checkpoint must be in the W&B run's files and on
+   HF. If that can't be confirmed, the run's `train.py` log directory (checkpoints included) is copied to
+   `logs/launch/<run>/run_dir/` before the instance goes.
+6. **Teardown:** `brev delete`, then waits until the instance is really gone, even after an error or Ctrl-C.
+   Box time and cost go into `logs/launch/<run>/launch.json` and into the W&B run summary as `launch/*`.
+
+The exit code is 0 only when training succeeded and the checkpoint was verified.
+
+| Option | What it does |
+|---|---|
+| `--box isaac-rl-video` | Reuse an existing instance (starts it if stopped, skips the install, stops it at the end) |
+| `--types a,b,c` | Instance types to try, in order (`brev search --gpu-name L40S` lists them). Env: `BREV_TYPES` |
+| `--max-setup-min 40` / `--max-train-min 120` | Time limits. At the training limit, train.py gets SIGINT, so the W&B run ends as failed with its last checkpoints, then the instance is deleted. |
+| `--keep` | Leave the instance running at the end (for debugging; remember to delete it) |
+| `--ref <commit>` | Run another pushed commit instead of `HEAD` |
+| `--dry-run` | Preflight checks only |
+
+The instance is kept only in one case: training succeeded, but the checkpoint couldn't be verified on W&B/HF
+*or* copied back. It would otherwise be lost. The launcher then prints the `brev delete` command.
+
+**If the laptop sleeps or loses its network mid-run,** the instance keeps running and billing.
+[`scripts/brev/reap.py`](../scripts/brev/reap.py) lists run boxes (only names that end in the launcher's
+timestamp, never the dev box) and deletes the ones older than `--max-age-hours` (default 6):
+
+```bash
+python scripts/brev/reap.py            # list
+python scripts/brev/reap.py --delete   # delete the stale ones
+```
+
+Tests for the launcher's pure logic run on the laptop: `pip install -r requirements-local.txt && pytest tests`.
