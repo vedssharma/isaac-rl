@@ -467,6 +467,7 @@ echo "started pid $!"
             time.sleep(30)
         self.record["teardown_issued_at"] = datetime.now(UTC).isoformat(timespec="seconds")
         # Nebius can sit in STOPPING/DELETING for 10+ minutes; confirm before saying it's done.
+        end = time.time() + 25 * 60
         while time.time() < end:
             inst = get_instance(self.name)
             status = inst.get("status") if inst else None
