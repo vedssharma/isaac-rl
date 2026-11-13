@@ -231,9 +231,15 @@ class Launch:
         brev("refresh", timeout=180)  # writes this instance's entry in ~/.brev/ssh_config
         # RUNNING isn't enough: Brev may still be "building" the VM (AWS took over 10 min once).
         deadline = time.time() + self.args.max_setup_min * 60
+        attempts = 0
         while ssh(self.name, "true", timeout=60).returncode != 0:
             if time.time() > deadline:
                 raise BrevError(f"no ssh to {self.name} after {self.args.max_setup_min:.0f} min")
+            attempts += 1
+            if attempts % 3 == 0:
+                # The ssh entry changes when Brev finishes building the VM (on AWS: from the EC2 host, whose
+                # port 22 is closed, to Brev's gateway), so the entry written at RUNNING can go stale.
+                brev("refresh", timeout=180, check=False)
             time.sleep(POLL_S)
         log("ssh is up")
 
