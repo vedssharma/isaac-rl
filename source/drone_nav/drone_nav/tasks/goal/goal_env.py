@@ -283,6 +283,17 @@ class DroneNavGoalEnv(DirectRLEnv):
         )
         self.extras["log"] = log
 
+    def close(self):
+        # DirectRLEnv.close() deletes the scene before the viewport camera controller, which only unsubscribes
+        # its per-frame callback in __del__. Following a robot (our viewer cfg), that callback then hits the
+        # deleted scene and prints an AttributeError at the end of every run. Unsubscribe first.
+        controller = getattr(self, "viewport_camera_controller", None)
+        handle = getattr(controller, "_viewport_camera_update_handle", None)
+        if handle is not None:
+            handle.unsubscribe()
+            controller._viewport_camera_update_handle = None
+        super().close()
+
     # -- debug visualization
 
     def _set_debug_vis_impl(self, debug_vis: bool):
