@@ -9,7 +9,8 @@ See [PLAN.md](PLAN.md) for the full project plan and roadmap.
 
 1. Accounts, API keys and the Brev CLI: follow [docs/setup.md](docs/setup.md), then run `python scripts/check_env.py`.
 2. Isaac Sim / Isaac Lab on a Brev GPU instance: [scripts/brev/install_isaac.sh](scripts/brev/install_isaac.sh).
-3. Train with [scripts/train.py](scripts/train.py) (see "Training runs" in [docs/setup.md](docs/setup.md)).
+3. Train with [scripts/train.py](scripts/train.py) (see "Training runs" in [docs/setup.md](docs/setup.md)), or from
+   your laptop on a fresh GPU instance with [scripts/brev/launch.py](scripts/brev/launch.py) (§7 there).
 
 ## Progress notes
 

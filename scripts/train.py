@@ -102,6 +102,7 @@ if version.parse(installed_version) < version.parse(RSL_RL_VERSION):
 import logging
 import os
 import platform
+import signal
 import subprocess
 import time
 import traceback
@@ -237,6 +238,35 @@ def finish_logging(runner: OnPolicyRunner, exit_code: int, summary: dict, videos
     writer.close()  # flush the TensorBoard event file
 
 
+# Set by the SIGINT/SIGTERM handler; checked at every env step (see stop_on_signal).
+STOP_SIGNAL: list[str] = []
+
+
+def _record_stop_signal(signum, frame):
+    STOP_SIGNAL.append(signal.Signals(signum).name)
+
+
+def stop_on_signal(env: RslRlVecEnvWrapper) -> None:
+    """Make a Ctrl-C / SIGTERM stop training cleanly, so the `finally` in main() finishes the W&B run.
+
+    Kit installs its own SIGINT handler, which shuts the app down without unwinding Python. Raising from a
+    Python signal handler doesn't work either: most of a training step runs inside Kit's update loop, and an
+    exception raised in one of its Python callbacks is caught and logged by Kit, so training carries on. So
+    the handler only records the signal, and the next env.step(), called from RSL-RL's rollout loop in plain
+    Python, raises KeyboardInterrupt.
+    """
+    signal.signal(signal.SIGINT, _record_stop_signal)
+    signal.signal(signal.SIGTERM, _record_stop_signal)
+    step = env.step
+
+    def step_or_stop(actions):
+        if STOP_SIGNAL:
+            raise KeyboardInterrupt(f"received {STOP_SIGNAL[0]}")
+        return step(actions)
+
+    env.step = step_or_stop
+
+
 @hydra_task_config(args_cli.task, args_cli.agent)
 def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agent_cfg: RslRlBaseRunnerCfg):
     """Train with RSL-RL agent."""
@@ -348,9 +378,19 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
 
     # run training
     exit_code = 1
+    stop_on_signal(env)  # after Kit has started, so our handlers replace Kit's
     try:
         runner.learn(num_learning_iterations=agent_cfg.max_iterations, init_at_random_ep_len=True)
         exit_code = 0
+    except KeyboardInterrupt as e:
+        print(f"[INFO] Training stopped at iteration {runner.current_learning_iteration}: {e}")
+        if IS_RANK_ZERO:
+            # Keep the progress since the last periodic save, so the run can be resumed (--resume).
+            try:
+                runner.save(os.path.join(log_dir, f"model_{runner.current_learning_iteration}.pt"))
+            except Exception:
+                traceback.print_exc()
+        raise
     finally:
         train_time = round(time.time() - start_time, 2)
         print(f"Training time: {train_time} seconds")
