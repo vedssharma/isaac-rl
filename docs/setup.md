@@ -139,7 +139,8 @@ Everything after `--` goes to `scripts/train.py`. The launcher adds `--headless`
 1. **Preflight:** the keys in `.env` are set, `brev` is signed in, there are no uncommitted changes, and the
    commit is pushed.
 2. **Instance:** `brev create isaac-rl-<run name>-<UTC yymmddHHMM>`, trying each type in `--types` in order
-   (default: Nebius L40S, then Crusoe L40S, then AWS `g6e.2xlarge`).
+   (default: Nebius L40S, then Crusoe L40S, then AWS `g6e.2xlarge`). Each type gets its own attempt of up to
+   `--boot-timeout-min` (12). An instance that goes to `FAILURE` is deleted and the next type is tried.
 3. **Job:** over ssh, clones this repo at that exact commit into `~/launch/isaac-rl` and starts
    [`scripts/brev/run_remote.sh`](../scripts/brev/run_remote.sh) in the background. It runs
    `install_isaac.sh` if Isaac Lab isn't installed yet (about 5 minutes on a 16-vCPU box), then `train.py`.
@@ -158,13 +159,26 @@ The exit code is 0 only when training succeeded and the checkpoint was verified.
 |---|---|
 | `--box isaac-rl-video` | Reuse an existing instance (starts it if stopped, skips the install, stops it at the end) |
 | `--types a,b,c` | Instance types to try, in order (`brev search --gpu-name L40S` lists them). Env: `BREV_TYPES` |
-| `--max-setup-min 40` / `--max-train-min 120` | Time limits. At the training limit, train.py gets SIGINT, so the W&B run ends as failed with its last checkpoints, then the instance is deleted. |
+| `--max-setup-min 40` / `--max-train-min 120` | Time limits for the install and for `train.py`. The training limit includes Kit's start-up (about 2 min on a new box, which builds its shader caches). At the limit, train.py gets SIGINT: the W&B run ends as failed with the checkpoints saved so far, the run directory is copied back, and the instance is deleted. |
+| `--boot-timeout-min 12` | How long each instance type gets to reach `RUNNING` |
 | `--keep` | Leave the instance running at the end (for debugging; remember to delete it) |
 | `--ref <commit>` | Run another pushed commit instead of `HEAD` |
 | `--dry-run` | Preflight checks only |
 
 The instance is kept only in one case: training succeeded, but the checkpoint couldn't be verified on W&B/HF
 *or* copied back. It would otherwise be lost. The launcher then prints the `brev delete` command.
+
+**Brev behaviour the launcher works around** (seen while testing it, 2026-11-13):
+
+- A new instance runs its own `apt-get` for the first minute or so. `install_isaac.sh` waits for the dpkg lock.
+- `brev create --type a,b,c` falls back only when the create call itself fails. An instance can be accepted
+  and then go to `FAILURE`, so the launcher tries one type at a time and watches the status.
+- `brev start` on a stopped instance can block for several minutes, and `brev stop`/`delete` are refused
+  while it is `STARTING`. The launcher polls the status and retries the teardown.
+- The Brev API sometimes answers `resource exhausted` (no capacity for `create`, and for a minute even
+  `brev ls`). `brev ls` is retried with backoff, and each cleanup step runs even if another one fails.
+- Nebius takes about 10 minutes to finish a delete or a stop. The launcher waits for it before exiting, so
+  "box time" in `launch.json` includes that wait.
 
 **If the laptop sleeps or loses its network mid-run,** the instance keeps running and billing.
 [`scripts/brev/reap.py`](../scripts/brev/reap.py) lists run boxes (only names that end in the launcher's

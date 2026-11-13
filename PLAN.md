@@ -223,7 +223,7 @@ Each phase ends with a **demo video + W&B report**. Don't move on until the exit
 - [ ] Create a Brev account, add a limited amount of credit, create an API key
 - [ ] Set up the dev box and build the base image (§3.2). Record start-up time, steps/s and VRAM for 1k/4k/8k envs
 - [ ] Run the built-in `Isaac-Quadcopter-Direct-v0` with RSL-RL headless on Brev; get W&B logging working
-- [ ] Write `launch.py` v0: create instance → run → upload → delete
+- [x] Write `launch.py` v0: create instance → run → upload → delete (`scripts/brev/launch.py`, `reap.py`)
 - **Exit:** the built-in quadcopter task trains to convergence from one local command, and the checkpoint is on W&B/HF.
 
 ### Phase 1 — Own environment, goal reaching, no obstacles (week 2)
