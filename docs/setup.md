@@ -82,6 +82,29 @@ bash scripts/brev/install_isaac.sh           # prints the smoke-test command at 
 
 Write down anything you had to change. Those notes become the base-image `Dockerfile` in step 3.
 
+### Training runs
+
+Start every run with this repo's [`scripts/train.py`](../scripts/train.py), not Isaac Lab's copy. It takes the
+same arguments, plus `--hf_upload none` to skip the Hugging Face upload. It also:
+
+- finishes the W&B run before Isaac Sim exits. Isaac Lab's script doesn't, so its runs stay "running" and lose
+  the final checkpoint.
+- records the git SHA, package versions and GPU in `params/run_meta.yaml` and in the W&B config.
+- uploads the final checkpoint, `params/`, git diffs and any `--video` clips to `HF_REPO_ID` under
+  `runs/<experiment>/<run>/`, and logs the clips to W&B.
+- writes logs to `logs/rsl_rl/<experiment>/<timestamp>_<run_name>/` in this repo.
+
+On the instance, export the same variables as your `.env` (`WANDB_API_KEY`, `WANDB_ENTITY`, `WANDB_PROJECT`,
+`HF_TOKEN`, `HF_REPO_ID`), then:
+
+```bash
+source ~/isaac-venv/bin/activate
+python scripts/train.py --task Isaac-Quadcopter-Direct-v0 --headless --num_envs 4096 \
+    --seed 42 --run_name p0-quadcopter-baseline-s42 --logger wandb
+```
+
+Name runs `p{phase}-{short-desc}-s{seed}` (PLAN.md §7).
+
 **When you're done, stop it** from your laptop: `brev stop isaac-rl-dev`. The disk (including the install) is
 kept, and `brev start isaac-rl-dev` brings it back. A restart can fail if no L40S is free in that region at the
 moment; your data waits until one is. Keep code in git and results on W&B/HF so nothing important lives only

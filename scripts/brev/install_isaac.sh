@@ -81,12 +81,13 @@ Installed. Smoke test (first start builds shader caches and can take several min
   python scripts/reinforcement_learning/rsl_rl/train.py \\
       --task Isaac-Quadcopter-Direct-v0 --headless --num_envs 4096 --max_iterations 10
 
-Then a full run with W&B. Export WANDB_API_KEY, WANDB_PROJECT and WANDB_USERNAME (your W&B
-entity; RSL-RL reads the entity from WANDB_USERNAME, not WANDB_ENTITY) on the instance first:
+Then a full run with this repo's scripts/train.py, which logs to W&B, finishes the W&B run
+cleanly and uploads the final checkpoint to HF. Export WANDB_API_KEY, WANDB_ENTITY,
+WANDB_PROJECT, HF_TOKEN and HF_REPO_ID on the instance first (the names used in .env):
 
-  python scripts/reinforcement_learning/rsl_rl/train.py \\
-      --task Isaac-Quadcopter-Direct-v0 --headless --num_envs 4096 \\
-      --logger wandb --log_project_name "\${WANDB_PROJECT:-isaac-rl}"
+  cd <this repo>
+  python scripts/train.py --task Isaac-Quadcopter-Direct-v0 --headless --num_envs 4096 \\
+      --seed 42 --run_name p0-quadcopter-baseline-s42 --logger wandb
 
 When you're done: run 'brev stop isaac-rl-dev' on your laptop so the GPU stops billing.
 MSG
