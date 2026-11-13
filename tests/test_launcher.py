@@ -78,3 +78,41 @@ def test_flag_value():
     assert launch.flag_value(["--hf_upload", "none"], "--hf_upload") == "none"
     assert launch.flag_value(["--hf_upload=none"], "--hf_upload") == "none"
     assert launch.flag_value(["--hf_upload"], "--hf_upload") is None
+
+
+def test_create_falls_back_when_an_instance_goes_to_failure(monkeypatch):
+    """Nebius once accepted a create and then left the instance in FAILURE; the next type must be tried."""
+    states: dict[str, list[str]] = {}  # instance name -> statuses it will report, last one sticks
+    calls = []
+
+    def fake_brev(*args, **kwargs):
+        calls.append(args)
+        if args[0] == "create":
+            name, itype = args[1], args[3]
+            states[name] = ["DEPLOYING", "FAILURE"] if itype == "bad-type" else ["DEPLOYING", "RUNNING"]
+        elif args[0] == "delete":
+            states.pop(args[1], None)
+        return launch.subprocess.CompletedProcess(args, 0, "", "")
+
+    def fake_get_instance(name):
+        if name not in states:
+            return None
+        seq = states[name]
+        status = seq.pop(0) if len(seq) > 1 else seq[0]
+        return {"name": name, "status": status, "instance_type": "t", "gpu": "L40S"}
+
+    stamps = iter(range(10))
+    monkeypatch.setattr(launch, "brev", fake_brev)
+    monkeypatch.setattr(launch, "get_instance", fake_get_instance)
+    monkeypatch.setattr(launch.time, "sleep", lambda s: None)
+    monkeypatch.setattr(launch.brevcli, "run_box_name", lambda run, now=None: f"isaac-rl-{run}-261113150{next(stamps)}")
+
+    args, _ = launch.parse_args(["--run-name", "p0-x-s1", "--types", "bad-type,good-type"])
+    lnch = launch.Launch(args, launch.build_train_args(["--task", "T"], "p0-x-s1"), "sha", "url")
+    inst = lnch.create()
+
+    assert inst["status"] == "RUNNING"
+    assert [c[3] for c in calls if c[0] == "create"] == ["bad-type", "good-type"]
+    assert lnch.failed_boxes == ["isaac-rl-p0-x-s1-2611131501"]
+    assert ("delete", "isaac-rl-p0-x-s1-2611131501") in [c[:2] for c in calls]
+    assert lnch.name == "isaac-rl-p0-x-s1-2611131502"

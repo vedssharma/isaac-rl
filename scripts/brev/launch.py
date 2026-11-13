@@ -78,7 +78,8 @@ def parse_args(argv: list[str]) -> tuple[argparse.Namespace, list[str]]:
     p.add_argument(
         "--allow-dirty", action="store_true", help="run even with uncommitted changes (they are NOT included)"
     )
-    p.add_argument("--max-setup-min", type=float, default=40, help="limit for boot + install (default 40)")
+    p.add_argument("--boot-timeout-min", type=float, default=12, help="per instance type, to reach RUNNING (12)")
+    p.add_argument("--max-setup-min", type=float, default=40, help="limit for the install (default 40)")
     p.add_argument("--max-train-min", type=float, default=120, help="limit for train.py (default 120)")
     p.add_argument("--keep", action="store_true", help="don't delete/stop the instance at the end")
     p.add_argument("--quiet", action="store_true", help="print only progress lines; the full log is still saved")
@@ -170,6 +171,7 @@ class Launch:
         self.wandb_run_id = "".join(secrets.choice(string.ascii_lowercase + string.digits) for _ in range(8))
         self.box_up_at: float | None = None
         self.started = False
+        self.failed_boxes: list[str] = []  # instances from failed create attempts, already deleted
         self.exit_code: int | None = None
         self.record: dict = {
             "run_name": args.run_name,
@@ -196,41 +198,76 @@ class Launch:
             if inst.get("status") != "RUNNING":
                 log(f"starting {self.name} (status {inst.get('status')})")
                 brev("start", self.name, timeout=300)
+            inst = self.wait_running(self.args.max_setup_min * 60)
+            if inst is None:
+                raise BrevError(f"{self.name} didn't reach RUNNING")
         else:
-            if get_instance(self.name) is not None:
-                raise SystemExit(f"an instance named {self.name} already exists")
-            log(f"creating {self.name}, trying types: {self.args.types}")
-            self.box_up_at = time.time()  # billing can start before create returns
-            boot_s = int(self.args.max_setup_min * 60)
-            result = brev(
-                "create",
-                self.name,
-                "--type",
-                self.args.types,
-                "--timeout",
-                str(boot_s),
-                timeout=boot_s + 300,
-                check=False,
-            )
-            if result.returncode != 0:
-                raise BrevError(f"brev create failed: {(result.stderr or result.stdout)[-800:]}")
-        deadline = time.time() + self.args.max_setup_min * 60
-        while True:
-            inst = get_instance(self.name) or {}
-            if inst.get("status") == "RUNNING":
-                break
-            if time.time() > deadline:
-                raise BrevError(f"{self.name} not RUNNING after {self.args.max_setup_min} min: {inst}")
-            time.sleep(POLL_S)
+            inst = self.create()
+        self.record["instance"] = self.name
         self.record["instance_type"] = inst.get("instance_type")
         self.record["gpu"] = inst.get("gpu")
         log(f"{self.name} is RUNNING ({inst.get('instance_type')}, {inst.get('gpu')}); waiting for ssh")
         brev("refresh", timeout=180)  # writes this instance's entry in ~/.brev/ssh_config
+        deadline = time.time() + 10 * 60
         while ssh(self.name, "true", timeout=60).returncode != 0:
             if time.time() > deadline:
-                raise BrevError(f"no ssh to {self.name} after {self.args.max_setup_min} min")
+                raise BrevError(f"no ssh to {self.name} after 10 min")
             time.sleep(POLL_S)
         log("ssh is up")
+
+    def create(self) -> dict:
+        """Try each instance type in turn, one instance at a time, until one reaches RUNNING.
+
+        `brev create --type a,b,c` only falls back when the create call itself fails. An instance that is
+        accepted and then goes to FAILURE (seen on Nebius) would otherwise be waited on until the time limit.
+        """
+        types = [t.strip() for t in self.args.types.split(",") if t.strip()]
+        per_type_s = self.args.boot_timeout_min * 60
+        tried: set[str] = set()
+        for i, itype in enumerate(types):
+            # Each attempt gets its own name: a failed instance can take 10+ minutes to finish deleting.
+            name = brevcli.run_box_name(self.args.run_name)
+            while name in tried or get_instance(name) is not None:
+                time.sleep(15)
+                name = brevcli.run_box_name(self.args.run_name)
+            tried.add(name)
+            self.name = name
+            log(f"creating {name} as {itype} ({i + 1}/{len(types)})")
+            if self.box_up_at is None:
+                self.box_up_at = time.time()  # billing can start before create returns
+            result = brev(
+                "create", name, "--type", itype, "--timeout", str(int(per_type_s)),
+                timeout=per_type_s + 300, check=False,
+            )  # fmt: skip
+            if result.returncode == 0:
+                inst = self.wait_running(per_type_s)
+                if inst is not None:
+                    return inst
+            else:
+                log(f"brev create failed: {(result.stderr or result.stdout).strip()[-300:]}")
+            self.failed_boxes.append(name)
+            if get_instance(name) is not None:
+                log(f"deleting the failed instance {name}")
+                brev("delete", name, timeout=300, check=False)
+        raise BrevError(f"none of the instance types came up: {', '.join(types)}")
+
+    def wait_running(self, timeout_s: float) -> dict | None:
+        """The instance once it is RUNNING; None if it fails, disappears or runs out of time."""
+        deadline = time.time() + timeout_s
+        last = None
+        while time.time() < deadline:
+            inst = get_instance(self.name)
+            status = inst.get("status") if inst else None
+            if status != last:
+                log(f"{self.name}: {status}")
+                last = status
+            if status == "RUNNING":
+                return inst
+            if status in (None, "FAILURE", "DELETING") or (status == "STOPPING" and not self.reuse):
+                return None
+            time.sleep(POLL_S)
+        log(f"{self.name} not RUNNING after {timeout_s / 60:.0f} min")
+        return None
 
     # -- 3. start the job
 
@@ -425,6 +462,14 @@ echo "started pid $!"
         log(f"{self.name} is still {status} after 25 min; check `brev ls` later")
         self.record["teardown"] = f"{action} pending ({status})"
 
+    def check_failed_boxes(self) -> None:
+        for name in self.failed_boxes:
+            inst = get_instance(name)
+            if inst is not None and inst.get("status") != "DELETING":
+                log(f"failed attempt {name} is still {inst.get('status')}; deleting it again")
+                brev("delete", name, timeout=300, check=False)
+        self.record["failed_attempts"] = self.failed_boxes
+
     def account(self) -> None:
         """Box time × hourly price into launch.json and the W&B summary (launch/*)."""
         if self.box_up_at is None:
@@ -435,6 +480,8 @@ echo "started pid $!"
         self.record["price_per_hour"] = price
         self.record["cost_usd"] = round(hours * price, 2) if price is not None else None
         log(f"box time {hours * 60:.0f} min" + (f", about ${hours * price:.2f}" if price else ""))
+        if not self.started:
+            return  # train.py never ran, so there is no W&B run to annotate
         try:
             import wandb
 
@@ -470,6 +517,7 @@ echo "started pid $!"
             self.save_record()
             # Keep the box only if training worked but its checkpoint exists nowhere else.
             self.teardown(keep_for_safety=self.exit_code == 0 and not verified and not pulled)
+            self.check_failed_boxes()
             self.account()
             self.record["ended_at"] = datetime.now(UTC).isoformat(timespec="seconds")
             self.save_record()
