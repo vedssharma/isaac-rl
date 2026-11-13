@@ -242,7 +242,7 @@ class Launch:
         clone = f"{REMOTE_ROOT}/isaac-rl"
         script = f"""set -euo pipefail
 {exports}
-command -v git >/dev/null || {{ sudo apt-get update -qq && sudo apt-get install -y -qq git; }}
+command -v git >/dev/null || {{ sudo apt-get -o DPkg::Lock::Timeout=900 update -qq && sudo apt-get -o DPkg::Lock::Timeout=900 install -y -qq git; }}
 if pgrep -f '[s]cripts/train.py' >/dev/null; then echo 'another train.py is already running here' >&2; exit 4; fi
 mkdir -p {self.remote_run_dir}
 [ -d {clone}/.git ] || git clone --quiet {q(self.clone_url)} {clone}

@@ -30,8 +30,10 @@ nvidia-smi --query-gpu=name,driver_version,memory.total --format=csv
 
 echo "== System libs (EGL/Vulkan/X for headless Kit) =="
 SUDO=""; [ "$(id -u)" -ne 0 ] && SUDO="sudo"
-$SUDO apt-get update -qq
-$SUDO apt-get install -y -qq git cmake build-essential libglu1-mesa libegl1 libvulkan1 libxt6 libxrandr2 >/dev/null
+# A freshly booted instance may still be running its own apt-get (Brev's setup); wait for the lock.
+APT=(apt-get -o DPkg::Lock::Timeout=900)
+$SUDO "${APT[@]}" update -qq
+$SUDO "${APT[@]}" install -y -qq git cmake build-essential libglu1-mesa libegl1 libvulkan1 libxt6 libxrandr2 >/dev/null
 
 echo "== Python 3.11 venv via uv =="
 command -v uv >/dev/null || curl -LsSf https://astral.sh/uv/install.sh | sh
