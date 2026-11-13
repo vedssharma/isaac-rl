@@ -78,10 +78,13 @@ class DroneNavGoalEnvCfg(DirectRLEnvCfg):
     scene: InteractiveSceneCfg = InteractiveSceneCfg(
         num_envs=4096, env_spacing=2.5, replicate_physics=True, clone_in_fabric=True
     )
-    # Videos (--video) follow env 0's drone instead of showing the whole grid from far away.
+    # Videos (--video) follow env 0's drone from about 1.5 m, close enough to see the 9 cm Crazyflie.
     viewer: ViewerCfg = ViewerCfg(
-        origin_type="asset_root", asset_name="robot", env_index=0, eye=(-2.5, -2.5, 1.5), lookat=(0.0, 0.0, 0.0)
+        origin_type="asset_root", asset_name="robot", env_index=0, eye=(-1.0, -1.0, 0.45), lookat=(0.0, 0.0, 0.0)
     )
+    # Goal markers: only the first few envs' (all 4096 would fill the chase camera's view), drawn small.
+    goal_marker_envs = 1
+    goal_marker_radius = 0.1
 
     # robot and action scaling (as Isaac-Quadcopter-Direct-v0)
     robot: ArticulationCfg = CRAZYFLIE_CFG.replace(prim_path="/World/envs/env_.*/Robot")
@@ -300,7 +303,7 @@ class DroneNavGoalEnv(DirectRLEnv):
         if debug_vis:
             if not hasattr(self, "goal_pos_visualizer"):
                 marker_cfg = SPHERE_MARKER_CFG.copy()
-                marker_cfg.markers["sphere"].radius = self.cfg.goal_radius
+                marker_cfg.markers["sphere"].radius = self.cfg.goal_marker_radius
                 marker_cfg.prim_path = "/Visuals/Command/goal_position"
                 self.goal_pos_visualizer = VisualizationMarkers(marker_cfg)
             self.goal_pos_visualizer.set_visibility(True)
@@ -308,4 +311,4 @@ class DroneNavGoalEnv(DirectRLEnv):
             self.goal_pos_visualizer.set_visibility(False)
 
     def _debug_vis_callback(self, event):
-        self.goal_pos_visualizer.visualize(self._goal_pos_w)
+        self.goal_pos_visualizer.visualize(self._goal_pos_w[: self.cfg.goal_marker_envs])
