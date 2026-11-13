@@ -160,5 +160,5 @@ same seed, same 500 iterations. Evaluated the same way as §3, on a Crusoe L40S 
 
 The cap holds: the peak speed stays within about 0.3 m/s of the 3.25 m/s optimum, and success is unchanged. Path
 efficiency drops slightly, because slower, dragged flight curves a little more on its way to goals at a different
-heading from the spawn yaw. Training still reached 100% success, by about iteration 110 rather than 50, with no
-crashes.
+heading from the spawn yaw. Training was barely slower: success first passed 98% at iteration 61, against 50 for the
+baseline, with no crashes.
