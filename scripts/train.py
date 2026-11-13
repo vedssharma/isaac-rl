@@ -102,6 +102,7 @@ if version.parse(installed_version) < version.parse(RSL_RL_VERSION):
 import logging
 import os
 import platform
+import signal
 import subprocess
 import time
 import traceback
@@ -237,6 +238,14 @@ def finish_logging(runner: OnPolicyRunner, exit_code: int, summary: dict, videos
     writer.close()  # flush the TensorBoard event file
 
 
+def _raise_keyboard_interrupt(signum, frame):
+    # One-shot: ignore further signals so they can't interrupt the W&B cleanup in the `finally` (launch.py's
+    # `timeout` still SIGKILLs a run whose cleanup hangs).
+    signal.signal(signal.SIGINT, signal.SIG_IGN)
+    signal.signal(signal.SIGTERM, signal.SIG_IGN)
+    raise KeyboardInterrupt(f"received {signal.Signals(signum).name}")
+
+
 @hydra_task_config(args_cli.task, args_cli.agent)
 def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agent_cfg: RslRlBaseRunnerCfg):
     """Train with RSL-RL agent."""
@@ -348,6 +357,11 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
 
     # run training
     exit_code = 1
+    # Kit installs its own SIGINT handler, which shuts the app down without raising in Python, so a Ctrl-C or
+    # launch.py's time limit skipped the `finally` below and left the W&B run "running". Take SIGINT/SIGTERM
+    # back now, after Kit has started, so they raise KeyboardInterrupt and the run is finished as failed.
+    signal.signal(signal.SIGINT, _raise_keyboard_interrupt)
+    signal.signal(signal.SIGTERM, _raise_keyboard_interrupt)
     try:
         runner.learn(num_learning_iterations=agent_cfg.max_iterations, init_at_random_ep_len=True)
         exit_code = 0
