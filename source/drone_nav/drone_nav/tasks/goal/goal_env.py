@@ -36,6 +36,7 @@ class RewardWeightsCfg:
     ang_rate: float = 0.01  # per second, x ||omega||^2 (rad/s)
     upright: float = 0.5  # per second, x (1 - up_z)
     time: float = 0.1  # per second
+    overspeed: float = 2.0  # per second, x (speed - speed_limit)^2 above the limit
 
 
 @configclass
@@ -90,6 +91,11 @@ class DroneNavGoalEnvCfg(DirectRLEnvCfg):
     robot: ArticulationCfg = CRAZYFLIE_CFG.replace(prim_path="/World/envs/env_.*/Robot")
     thrust_to_weight = 1.9
     moment_scale = 0.01
+    # Speed cap. The stock Crazyflie has no aerodynamic drag, and the Phase 1 baseline flew at 10 m/s.
+    # Linear drag sets a physical top speed (horizontal, at full thrust); None turns it off. The over-speed
+    # reward term then makes the policy cruise a little above speed_limit (about 3.25 m/s with the weights below).
+    drag_terminal_speed: float | None = 5.0  # m/s
+    speed_limit = 3.0  # m/s
 
     # task (PLAN.md §4.4)
     goal_min_dist = 10.0  # horizontal, m
@@ -132,6 +138,12 @@ class DroneNavGoalEnv(DirectRLEnv):
         gravity = torch.tensor(self.sim.cfg.gravity, device=dev).norm()
         self._robot_weight = (robot_mass * gravity).item()
         self._weights = self.cfg.rewards.to_dict()
+        self._drag_k = (
+            mdp.linear_drag_coefficient(self._robot_weight, self.cfg.thrust_to_weight, self.cfg.drag_terminal_speed)
+            if self.cfg.drag_terminal_speed
+            else 0.0
+        )
+        self._max_speed = torch.zeros(n, device=dev)
 
         self.set_debug_vis(self.cfg.debug_vis)
 
@@ -156,8 +168,12 @@ class DroneNavGoalEnv(DirectRLEnv):
         self._moment[:, 0, :] = self.cfg.moment_scale * self._actions[:, 1:]
 
     def _apply_action(self):
+        # Called every physics substep, so drag uses the current velocity. Forces are in the body frame.
+        forces = self._thrust
+        if self._drag_k:
+            forces = forces + mdp.drag_force(self._robot.data.root_lin_vel_b, self._drag_k).unsqueeze(1)
         self._robot.permanent_wrench_composer.set_forces_and_torques(
-            body_ids=self._body_id, forces=self._thrust, torques=self._moment
+            body_ids=self._body_id, forces=forces, torques=self._moment
         )
 
     # -- MDP
@@ -185,6 +201,7 @@ class DroneNavGoalEnv(DirectRLEnv):
         pos = self._robot.data.root_pos_w
         self._dist = torch.linalg.norm(self._goal_pos_w - pos, dim=1)
         self._path_len += torch.linalg.norm(pos - self._prev_pos_w, dim=1)
+        self._max_speed = torch.maximum(self._max_speed, torch.linalg.norm(self._robot.data.root_lin_vel_w, dim=1))
         self._prev_pos_w = pos.clone()
         self._terms = mdp.compute_terminations(
             self._dist,
@@ -211,6 +228,8 @@ class DroneNavGoalEnv(DirectRLEnv):
             prev_action=self._prev_actions,
             ang_vel_b=self._robot.data.root_ang_vel_b,
             upz=mdp.up_z(self._robot.data.projected_gravity_b),
+            speed=torch.linalg.norm(self._robot.data.root_lin_vel_w, dim=1),
+            speed_limit=self.cfg.speed_limit,
             step_dt=self.step_dt,
             weights=self._weights,
         )
@@ -263,6 +282,7 @@ class DroneNavGoalEnv(DirectRLEnv):
         self._dist[env_ids] = start_dist
         self._prev_pos_w[env_ids] = root_state[:, :3]
         self._path_len[env_ids] = 0.0
+        self._max_speed[env_ids] = 0.0
 
     def _log_episodes(self, env_ids: torch.Tensor) -> None:
         """Per-episode values for the episodes ending now. RSL-RL averages every element of each tensor over
@@ -279,6 +299,7 @@ class DroneNavGoalEnv(DirectRLEnv):
         log["Metrics/success_rate"] = reached.float()
         log["Metrics/final_distance_to_goal"] = self._dist[ended]
         log["Metrics/mean_speed"] = self._path_len[ended] / (steps * self.step_dt)
+        log["Metrics/max_speed"] = self._max_speed[ended]
         # Only over successful episodes; may be empty for an iteration (then RSL-RL logs nan).
         log["Metrics/time_to_goal_s"] = steps[reached] * self.step_dt
         # Distance actually closed / distance flown: 1 for a straight line. (Episodes end inside goal_radius, so

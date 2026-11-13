@@ -6,7 +6,17 @@ import pytest
 import torch
 from drone_nav.mdp import goal as mdp
 
-WEIGHTS = {"progress": 1.0, "goal": 10.0, "crash": 10.0, "smooth": 0.05, "ang_rate": 0.01, "upright": 0.5, "time": 0.1}
+WEIGHTS = {
+    "progress": 1.0,
+    "goal": 10.0,
+    "crash": 10.0,
+    "smooth": 0.05,
+    "ang_rate": 0.01,
+    "upright": 0.5,
+    "time": 0.1,
+    "overspeed": 2.0,
+}
+LIMIT = 3.0
 DT = 0.02
 
 
@@ -71,6 +81,8 @@ def rewards(**overrides):
         "prev_action": torch.zeros(n, 4),
         "ang_vel_b": torch.zeros(n, 3),
         "upz": torch.tensor([1.0]),
+        "speed": torch.tensor([2.0]),
+        "speed_limit": LIMIT,
         "step_dt": DT,
         "weights": WEIGHTS,
     }
@@ -85,6 +97,7 @@ def test_reward_terms_are_all_present_and_signed():
         action=torch.ones(1, 4),
         ang_vel_b=torch.ones(1, 3),
         upz=torch.tensor([0.5]),
+        speed=torch.tensor([4.0]),
     )
     assert tuple(terms) == mdp.REWARD_TERMS
     assert terms["progress"].item() == pytest.approx(0.1, rel=1e-5)  # float32
@@ -94,6 +107,7 @@ def test_reward_terms_are_all_present_and_signed():
     assert terms["ang_rate"].item() == pytest.approx(-0.01 * 3 * DT)
     assert terms["upright"].item() == pytest.approx(-0.5 * 0.5 * DT)
     assert terms["time"].item() == pytest.approx(-0.1 * DT)
+    assert terms["overspeed"].item() == pytest.approx(-2.0 * 1.0**2 * DT)  # 1 m/s over the limit
 
 
 def test_progress_sums_to_distance_closed():
@@ -117,3 +131,37 @@ def test_flying_to_the_goal_beats_hovering_and_crashing():
     crash = episode(0.0, 50, crashed=True)
     assert fly > hover > crash
     assert math.isclose(fly, 15.0 + 10.0 - 0.1 * 10.0, rel_tol=1e-3)
+
+
+def test_no_overspeed_penalty_at_or_below_the_limit():
+    for v in (0.0, 2.9, LIMIT):
+        assert rewards(speed=torch.tensor([v]))["overspeed"].item() == 0.0
+
+
+def test_best_cruise_speed_is_just_above_the_limit():
+    """Per second, flying straight at speed v earns v (progress) minus the over-speed penalty. Its maximum is at
+    v = limit + 1 / (2 x weight): 3.25 m/s with the default weights, far below the 10 m/s of the uncapped baseline."""
+    speeds = torch.linspace(0.0, 10.0, 1001)
+
+    def per_second(v):
+        terms = rewards(prev_dist=torch.tensor([v * DT]), dist=torch.tensor([0.0]), speed=torch.tensor([v]))
+        return (terms["progress"] + terms["overspeed"]).item() / DT
+
+    best = speeds[torch.tensor([per_second(v.item()) for v in speeds]).argmax()].item()
+    assert best == pytest.approx(LIMIT + 1 / (2 * WEIGHTS["overspeed"]), abs=0.02)
+
+
+def test_drag_coefficient_gives_the_requested_top_speed():
+    weight, ttw, v_top = 0.27, 1.9, 5.0
+    k = mdp.linear_drag_coefficient(weight, ttw, v_top)
+    # At v_top, drag balances the largest horizontal thrust that still holds altitude.
+    max_horizontal = math.sqrt((ttw * weight) ** 2 - weight**2)
+    assert k * v_top == pytest.approx(max_horizontal)
+    drag = mdp.drag_force(torch.tensor([[v_top, 0.0, 0.0]]), k)
+    torch.testing.assert_close(drag, torch.tensor([[-max_horizontal, 0.0, 0.0]]))
+
+
+def test_drag_opposes_velocity_in_any_frame():
+    v = torch.tensor([[1.0, -2.0, 0.5]])
+    torch.testing.assert_close(mdp.drag_force(v, 0.1), -0.1 * v)
+    torch.testing.assert_close(mdp.drag_force(torch.zeros(1, 3), 0.1), torch.zeros(1, 3))
