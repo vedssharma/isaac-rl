@@ -228,7 +228,9 @@ class Launch:
         self.record["instance_type"] = inst.get("instance_type")
         self.record["gpu"] = inst.get("gpu")
         log(f"{self.name} is RUNNING ({inst.get('instance_type')}, {inst.get('gpu')}); waiting for ssh")
-        brev("refresh", timeout=180)  # writes this instance's entry in ~/.brev/ssh_config
+        # Writes this instance's entry in ~/.brev/ssh_config. Not fatal: the Brev API sometimes answers
+        # "resource exhausted" for a minute, and the ssh loop below refreshes again.
+        brev("refresh", timeout=180, check=False)
         # RUNNING isn't enough: Brev may still be "building" the VM (AWS took over 10 min once).
         deadline = time.time() + self.args.max_setup_min * 60
         attempts = 0
