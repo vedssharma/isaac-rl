@@ -116,3 +116,28 @@ def test_create_falls_back_when_an_instance_goes_to_failure(monkeypatch):
     assert lnch.failed_boxes == ["isaac-rl-p0-x-s1-2611131501"]
     assert ("delete", "isaac-rl-p0-x-s1-2611131501") in [c[:2] for c in calls]
     assert lnch.name == "isaac-rl-p0-x-s1-2611131502"
+
+
+def test_cleanup_survives_a_brev_api_outage(monkeypatch, tmp_path, capsys):
+    """If every brev call fails during cleanup, run() must still finish, record it, and say what to delete."""
+
+    def broken(*args, **kwargs):
+        raise launch.BrevError("brev ls --json failed (1): resource exhausted")
+
+    def failing_provision():
+        raise launch.BrevError("brev create failed")
+
+    monkeypatch.setattr(launch, "REPO_ROOT", tmp_path)
+    monkeypatch.setattr(launch, "get_instance", broken)
+    monkeypatch.setattr(launch, "brev", broken)
+    monkeypatch.setattr(launch.brevcli, "price_per_hour", lambda t: None)
+
+    args, _ = launch.parse_args(["--run-name", "p0-x-s1"])
+    lnch = launch.Launch(args, launch.build_train_args(["--task", "T"], "p0-x-s1"), "sha", "url")
+    monkeypatch.setattr(lnch, "provision", failing_provision)
+    lnch.box_up_at = 0.0
+
+    assert lnch.run() == 1
+    assert lnch.record["teardown"] == "error"
+    assert f"brev delete {lnch.name}" in capsys.readouterr().out
+    assert (tmp_path / "logs" / "launch" / lnch.tag / "launch.json").exists()

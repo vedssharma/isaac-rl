@@ -510,6 +510,14 @@ echo "started pid $!"
         except Exception as e:  # noqa: BLE001
             log(f"couldn't add launch/* to the W&B summary: {e}")
 
+    def safely(self, what: str, fn, *args, default=None, **kwargs):
+        """Call fn; on any error, log it and return `default` instead of raising."""
+        try:
+            return fn(*args, **kwargs)
+        except Exception as e:  # noqa: BLE001
+            log(f"{what} failed: {type(e).__name__}: {e}")
+            return default
+
     def run(self) -> int:
         verified = pulled = False
         try:
@@ -524,18 +532,23 @@ echo "started pid $!"
         except (BrevError, subprocess.SubprocessError, OSError) as e:
             log(f"error: {e}")
         finally:
+            # Each step is isolated: a failure in one (e.g. the Brev API refusing calls for a minute) must not
+            # skip the teardown or the record.
             self.record["exit_code"] = self.exit_code
             if self.exit_code == 0:
-                verified = self.verify()
-            if not verified and self.started and get_instance(self.name) is not None:
-                pulled = self.pull_run_dir()
+                verified = bool(self.safely("verify", self.verify))
+            if not verified and self.started and self.safely("instance lookup", get_instance, self.name):
+                pulled = bool(self.safely("copy back", self.pull_run_dir))
             self.record["verified"] = verified
             self.record["pulled_run_dir"] = pulled
             self.save_record()
             # Keep the box only if training worked but its checkpoint exists nowhere else.
-            self.teardown(keep_for_safety=self.exit_code == 0 and not verified and not pulled)
-            self.check_failed_boxes()
-            self.account()
+            keep = self.exit_code == 0 and not verified and not pulled
+            if self.safely("teardown", self.teardown, keep_for_safety=keep, default=False) is False:
+                self.record["teardown"] = "error"
+                log(f"!! couldn't confirm {self.name} is gone. Check `brev ls` and run: brev delete {self.name}")
+            self.safely("failed-attempt cleanup", self.check_failed_boxes)
+            self.safely("cost accounting", self.account)
             self.record["ended_at"] = datetime.now(UTC).isoformat(timespec="seconds")
             self.save_record()
         log(f"exit code {self.exit_code}, verified {verified}; record in {self.local_dir / 'launch.json'}")

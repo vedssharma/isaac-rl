@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import re
 import subprocess
+import time
 from datetime import UTC, datetime
 
 # Run boxes are named isaac-rl-<run name>-<UTC yymmddHHMM>. reap.py only touches names with that suffix,
@@ -74,9 +75,20 @@ def _json_from(output: str):
     return json.loads(output[start:])
 
 
-def list_instances() -> list[dict]:
-    """`brev ls --json`: dicts with name, id, status, build_status, shell_status, instance_type, gpu."""
-    out = brev("ls", "--json").stdout
+def list_instances(retries: int = 6) -> list[dict]:
+    """`brev ls --json`: dicts with name, id, status, build_status, shell_status, instance_type, gpu.
+
+    Retries with backoff: the Brev API sometimes answers "resource exhausted" for a minute or so, and the
+    launcher's cleanup depends on this call.
+    """
+    for attempt in range(retries):
+        try:
+            out = brev("ls", "--json", timeout=60).stdout
+            break
+        except (BrevError, subprocess.TimeoutExpired):
+            if attempt == retries - 1:
+                raise
+            time.sleep(min(5 * 2**attempt, 60))
     if not out.strip() or "no instances" in out.lower():
         return []
     data = _json_from(out)
