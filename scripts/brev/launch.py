@@ -229,10 +229,11 @@ class Launch:
         self.record["gpu"] = inst.get("gpu")
         log(f"{self.name} is RUNNING ({inst.get('instance_type')}, {inst.get('gpu')}); waiting for ssh")
         brev("refresh", timeout=180)  # writes this instance's entry in ~/.brev/ssh_config
-        deadline = time.time() + 10 * 60
+        # RUNNING isn't enough: Brev may still be "building" the VM (AWS took over 10 min once).
+        deadline = time.time() + self.args.max_setup_min * 60
         while ssh(self.name, "true", timeout=60).returncode != 0:
             if time.time() > deadline:
-                raise BrevError(f"no ssh to {self.name} after 10 min")
+                raise BrevError(f"no ssh to {self.name} after {self.args.max_setup_min:.0f} min")
             time.sleep(POLL_S)
         log("ssh is up")
 
