@@ -30,10 +30,29 @@ nvidia-smi --query-gpu=name,driver_version,memory.total --format=csv
 
 echo "== System libs (EGL/Vulkan/X for headless Kit) =="
 SUDO=""; [ "$(id -u)" -ne 0 ] && SUDO="sudo"
-# A freshly booted instance may still be running its own apt-get (Brev's setup); wait for the lock.
-APT=(apt-get -o DPkg::Lock::Timeout=900)
-$SUDO "${APT[@]}" update -qq
-$SUDO "${APT[@]}" install -y -qq git cmake build-essential libglu1-mesa libegl1 libvulkan1 libxt6 libxrandr2 >/dev/null
+# A freshly booted instance may still be running its own apt-get (Brev's setup) for a few minutes. Its locks
+# include /var/lib/apt/lists/lock, which DPkg::Lock::Timeout doesn't cover, so wait for it to finish and
+# retry each apt step.
+wait_for_apt() {
+  local i
+  for i in $(seq 1 120); do
+    pgrep -x apt-get >/dev/null || pgrep -x dpkg >/dev/null || pgrep -f unattended-upgr >/dev/null || return 0
+    [ "$i" = 1 ] && echo "waiting for another apt-get/dpkg to finish..."
+    sleep 5
+  done
+}
+apt_retry() {
+  local i
+  for i in 1 2 3 4 5 6; do
+    wait_for_apt
+    $SUDO apt-get -o DPkg::Lock::Timeout=300 "$@" && return 0
+    echo "apt-get $1 failed (attempt $i); retrying in 20 s"
+    sleep 20
+  done
+  return 1
+}
+apt_retry update -qq
+apt_retry install -y -qq git cmake build-essential libglu1-mesa libegl1 libvulkan1 libxt6 libxrandr2 >/dev/null
 
 echo "== Python 3.11 venv via uv =="
 command -v uv >/dev/null || curl -LsSf https://astral.sh/uv/install.sh | sh

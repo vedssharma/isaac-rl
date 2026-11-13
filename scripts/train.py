@@ -129,6 +129,10 @@ import isaaclab_tasks  # noqa: F401
 from isaaclab_tasks.utils import get_checkpoint_path
 from isaaclab_tasks.utils.hydra import hydra_task_config
 
+# This repo's own tasks (Drone-Nav-*), straight from source/drone_nav so no install step can go stale.
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "source" / "drone_nav"))
+import drone_nav.tasks  # noqa: E402, F401
+
 logger = logging.getLogger(__name__)
 
 REPO_ROOT = Path(__file__).resolve().parents[1]

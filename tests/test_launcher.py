@@ -141,3 +141,20 @@ def test_cleanup_survives_a_brev_api_outage(monkeypatch, tmp_path, capsys):
     assert lnch.record["teardown"] == "error"
     assert f"brev delete {lnch.name}" in capsys.readouterr().out
     assert (tmp_path / "logs" / "launch" / lnch.tag / "launch.json").exists()
+
+
+def test_play_args_need_a_task_and_run_headless():
+    assert launch.build_play_args(["--task", "T", "--wandb_run", "abc"]) == [
+        "--task",
+        "T",
+        "--wandb_run",
+        "abc",
+        "--headless",
+    ]
+    with pytest.raises(SystemExit):
+        launch.build_play_args(["--wandb_run", "abc"])
+
+
+def test_script_flag_defaults_to_train():
+    assert launch.parse_args(["--run-name", "p1-x-s1"])[0].script == "train"
+    assert launch.parse_args(["--run-name", "p1-x-s1", "--script", "play"])[0].script == "play"

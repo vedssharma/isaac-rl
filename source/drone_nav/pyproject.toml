@@ -1,0 +1,14 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "drone_nav"
+version = "0.1.0"
+description = "Isaac Lab tasks for quadrotor navigation through clutter (isaac-rl)"
+requires-python = ">=3.11"
+# Isaac Sim / Isaac Lab / torch come from scripts/brev/install_isaac.sh, not from here.
+dependencies = []
+
+[tool.setuptools.packages.find]
+include = ["drone_nav*"]
