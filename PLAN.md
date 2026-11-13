@@ -227,9 +227,9 @@ Each phase ends with a **demo video + W&B report**. Don't move on until the exit
 - **Exit:** the built-in quadcopter task trains to convergence from one local command, and the checkpoint is on W&B/HF.
 
 ### Phase 1 — Own environment, goal reaching, no obstacles (week 2)
-- [ ] Scaffold `drone_nav/` as an Isaac Lab extension; register `Drone-Nav-Goal-v0` (Direct workflow)
-- [ ] Implement observations, the reward from §4.3 (no obstacle terms yet), terminations and resets
-- [ ] `play.py` that loads a checkpoint, records a video and prints metrics
+- [x] Scaffold `drone_nav/` as an Isaac Lab extension; register `Drone-Nav-Goal-v0` (Direct workflow)
+- [x] Implement observations, the reward from §4.3 (no obstacle terms yet), terminations and resets
+- [x] `play.py` that loads a checkpoint, records a video and prints metrics
 - [ ] Switch action space to CTBR + rate controller; compare against thrust+torques (your first ablation)
 - **Exit:** ≥ 98% of episodes reach random goals 10–20 m away; smooth flight in the video.
 
