@@ -202,13 +202,15 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     episodes = 0
     obs = env.get_observations()
     steps = 0
-    while simulation_app.is_running() and episodes < args_cli.episodes:
+    # Keep going until the video is complete too, even if the episodes are done first.
+    video_steps = args_cli.video_length if args_cli.video else 0
+    while simulation_app.is_running() and (episodes < args_cli.episodes or steps < video_steps):
         with torch.inference_mode():
             obs, _, dones, extras = env.step(policy(obs))
             runner.alg.policy.reset(dones)
         steps += 1
         log = extras.get("log")
-        if log:
+        if log and episodes < args_cli.episodes:
             for key, value in log.items():
                 logs.setdefault(key, []).append(torch.as_tensor(value).reshape(-1))
             episodes += len(log.get("Metrics/success_rate", []))

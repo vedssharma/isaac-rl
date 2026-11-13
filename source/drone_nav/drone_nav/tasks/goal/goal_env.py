@@ -281,9 +281,10 @@ class DroneNavGoalEnv(DirectRLEnv):
         log["Metrics/mean_speed"] = self._path_len[ended] / (steps * self.step_dt)
         # Only over successful episodes; may be empty for an iteration (then RSL-RL logs nan).
         log["Metrics/time_to_goal_s"] = steps[reached] * self.step_dt
-        log["Metrics/path_efficiency"] = self._start_dist[ended][reached] / self._path_len[ended][reached].clamp(
-            min=1e-6
-        )
+        # Distance actually closed / distance flown: 1 for a straight line. (Episodes end inside goal_radius, so
+        # the start distance alone would overstate it.)
+        closed = (self._start_dist - self._dist)[ended][reached]
+        log["Metrics/path_efficiency"] = closed / self._path_len[ended][reached].clamp(min=1e-6)
         self.extras["log"] = log
 
     def close(self):

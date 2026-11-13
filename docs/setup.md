@@ -177,6 +177,15 @@ The instance is kept only in one case: training succeeded, but the checkpoint co
   while it is `STARTING`. The launcher polls the status and retries the teardown.
 - The Brev API sometimes answers `resource exhausted` (no capacity for `create`, and for a minute even
   `brev ls`). `brev ls` is retried with backoff, and each cleanup step runs even if another one fails.
+- On AWS, `RUNNING` comes several minutes before Brev finishes building the VM, and the ssh entry that
+  `brev refresh` writes changes when it does (from the EC2 host, whose port 22 is closed, to Brev's gateway).
+  The launcher reruns `brev refresh` while it waits for ssh.
+- **AWS `g6e` boxes can't render.** Their image (Ubuntu 22.04, NVIDIA driver 595) crashes Kit's RTX renderer
+  (Isaac Sim 5.1) at start-up whenever cameras are on, i.e. with `--video`. Headless training is fine there.
+  For video, pass only Nebius/Crusoe types (`--types gpu-l40s-d.1gpu-16vcpu-96gb,l40s-48gb.1x`, driver 580)
+  or use the dev box (`--box isaac-rl-video`).
+- A new box's own `apt-get` also holds `/var/lib/apt/lists/lock`, which `DPkg::Lock::Timeout` doesn't cover;
+  `install_isaac.sh` waits for it and retries.
 - Nebius takes about 10 minutes to finish a delete or a stop. The launcher waits for it before exiting, so
   "box time" in `launch.json` includes that wait.
 
