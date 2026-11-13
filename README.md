@@ -15,4 +15,4 @@ See [PLAN.md](PLAN.md) for the full project plan and roadmap.
 ## Progress notes
 
 - [Phase 0 wrap-up: our own `train.py` and the first drone videos](docs/phase0-train-wrapper-and-video.md)
-- [Phase 1: our own environment, `Drone-Nav-Goal-v0`](docs/phase1-goal-env.md): 100% success on goals 10–20 m away
+- [Phase 1: our own environment, `Drone-Nav-Goal-v0`](docs/phase1-goal-env.md): 100% success on goals 10–20 m away, speed-capped at about 3 m/s
