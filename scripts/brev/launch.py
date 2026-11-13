@@ -197,7 +197,12 @@ class Launch:
             self.box_up_at = time.time()
             if inst.get("status") != "RUNNING":
                 log(f"starting {self.name} (status {inst.get('status')})")
-                brev("start", self.name, timeout=300)
+                # `brev start` can block for a long time (or exit early) while the provider finds a GPU;
+                # either way the status poll below decides.
+                try:
+                    brev("start", self.name, timeout=120, check=False)
+                except subprocess.TimeoutExpired:
+                    pass
             inst = self.wait_running(self.args.max_setup_min * 60)
             if inst is None:
                 raise BrevError(f"{self.name} didn't reach RUNNING")
@@ -442,15 +447,26 @@ echo "started pid $!"
             self.record["teardown"] = "already gone"
             return
         action, gone = ("stop", "STOPPED") if self.reuse else ("delete", None)
-        log(f"brev {action} {self.name}")
-        result = brev(action, self.name, timeout=300, check=False)
-        self.record["teardown_issued_at"] = datetime.now(UTC).isoformat(timespec="seconds")
-        if result.returncode != 0:
-            log(f"brev {action} failed; RUN IT BY HAND: {(result.stderr or result.stdout)[-400:]}")
-            self.record["teardown"] = f"{action} failed"
-            return
-        # Nebius can sit in STOPPING/DELETING for 10+ minutes; confirm before saying it's done.
+        # An instance that is still STARTING refuses `brev stop`/`delete`; keep trying until it accepts.
         end = time.time() + 25 * 60
+        while True:
+            log(f"brev {action} {self.name}")
+            try:
+                result = brev(action, self.name, timeout=300, check=False)
+                ok, err = result.returncode == 0, (result.stderr or result.stdout).strip()[-300:]
+            except subprocess.TimeoutExpired:
+                ok, err = False, "timed out"
+            if ok:
+                break
+            status = (get_instance(self.name) or {}).get("status")
+            if time.time() > end:
+                log(f"brev {action} still failing (status {status}); RUN IT BY HAND: brev {action} {self.name}")
+                self.record["teardown"] = f"{action} failed"
+                return
+            log(f"brev {action} failed while {status} ({err}); retrying in 30 s")
+            time.sleep(30)
+        self.record["teardown_issued_at"] = datetime.now(UTC).isoformat(timespec="seconds")
+        # Nebius can sit in STOPPING/DELETING for 10+ minutes; confirm before saying it's done.
         while time.time() < end:
             inst = get_instance(self.name)
             status = inst.get("status") if inst else None
