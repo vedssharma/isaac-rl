@@ -100,8 +100,8 @@ follows env 0's drone from about 1.5 m. It flies straight and level to each goal
 
 ![Chase camera, final policy](images/p1-goal-chase-frames.png)
 
-*Eight frames, 0.16 s apart, as env 0's drone reaches a goal (the red marker, top left) and starts the next
-episode. The attitude stays level throughout.*
+*Eight frames, 0.16 s apart: env 0's drone reaches a goal (the red marker, first frame), and the next
+episode starts. The attitude stays level throughout.*
 
 ## 4. What went wrong along the way
 
