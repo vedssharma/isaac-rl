@@ -51,7 +51,7 @@ POLL_S = 20
 # --quiet prints only lines containing one of these; the full log is always saved locally.
 QUIET_MARKERS = (
     "[run_remote]", "Learning iteration", "Mean reward", "Mean episode length", "Iteration time",
-    "Training time", "[INFO]", "[WARN]", "Error", "Traceback", "wandb:",
+    "Training time", "[INFO]", "[WARN]", "Error", "Traceback", "wandb:", "==== Evaluation", "(95% CI",
 )  # fmt: skip
 
 
@@ -87,6 +87,15 @@ def parse_args(argv: list[str]) -> tuple[argparse.Namespace, list[str]]:
         default="train",
         help="train: scripts/train.py, verified on W&B/HF. play: scripts/play.py (evaluation), which must exit 0",
     )
+    p.add_argument(
+        "--eval",
+        action="append",
+        default=[],
+        metavar="NAME[:OVERRIDE,...]",
+        help="train only: after training verifies, run scripts/play.py on the same box (repeatable), e.g. "
+        "--eval eval --eval eval_mass1.2:env.mass_scale=1.2. Results go to the run's W&B summary as NAME/*",
+    )
+    p.add_argument("--eval-episodes", type=int, default=1000, help="episodes per --eval (default 1000)")
     p.add_argument("--keep", action="store_true", help="don't delete/stop the instance at the end")
     p.add_argument("--quiet", action="store_true", help="print only progress lines; the full log is still saved")
     p.add_argument("--dry-run", action="store_true", help="run the preflight checks and print the plan, nothing else")
@@ -103,6 +112,14 @@ def flag_value(args: list[str], flag: str) -> str | None:
         if a.startswith(flag + "="):
             return a.split("=", 1)[1]
     return None
+
+
+def parse_eval_spec(spec: str) -> tuple[str, list[str]]:
+    """'eval_mass1.2:env.mass_scale=1.2,env.foo=1' -> ('eval_mass1.2', ['env.mass_scale=1.2', 'env.foo=1'])."""
+    name, _, overrides = spec.partition(":")
+    if not name or not all(c.isalnum() or c in "._-" for c in name):
+        raise SystemExit(f"--eval {spec!r}: the name must be letters, digits, '.', '_' or '-'")
+    return name, [o for o in overrides.split(",") if o]
 
 
 def build_play_args(play_args: list[str]) -> list[str]:
@@ -301,8 +318,14 @@ class Launch:
 
     # -- 3. start the job
 
-    def start_remote(self) -> None:
+    def start_remote(
+        self, script: str | None = None, args: list[str] | None = None, run_dir: str | None = None
+    ) -> None:
+        """Start scripts/<script>.py (default: --script) in the background via run_remote.sh."""
         q = shlex.quote
+        script = script or self.args.script
+        args = self.train_args if args is None else args
+        run_dir = run_dir or self.remote_run_dir
         env = {k: os.environ[k] for k in REQUIRED_ENV + OPTIONAL_ENV if os.environ.get(k)}
         env["WANDB_RUN_ID"] = self.wandb_run_id  # so we can find and verify the run on W&B afterwards
         exports = "\n".join(f"export {k}={q(v)}" for k, v in env.items())
@@ -311,36 +334,38 @@ class Launch:
 {exports}
 command -v git >/dev/null || {{ sudo apt-get -o DPkg::Lock::Timeout=900 update -qq && sudo apt-get -o DPkg::Lock::Timeout=900 install -y -qq git; }}
 if pgrep -f '[s]cripts/(train|play).py' >/dev/null; then echo 'another job is already running here' >&2; exit 4; fi
-mkdir -p {self.remote_run_dir}
+mkdir -p {run_dir}
 [ -d {clone}/.git ] || git clone --quiet {q(self.clone_url)} {clone}
 git -C {clone} fetch --quiet origin
 git -C {clone} checkout --quiet --force --detach {self.sha}
 git -C {clone} clean -fdq
 cd {clone}
-RUN_SCRIPT=scripts/{self.args.script}.py nohup setsid bash scripts/brev/run_remote.sh \\
-    {self.remote_run_dir} {int(self.args.max_train_min)} \\
-    {" ".join(q(a) for a in self.train_args)} > {self.remote_run_dir}/run.log 2>&1 < /dev/null &
+RUN_SCRIPT=scripts/{script}.py nohup setsid bash scripts/brev/run_remote.sh \\
+    {run_dir} {int(self.args.max_train_min)} \\
+    {" ".join(q(a) for a in args)} > {run_dir}/run.log 2>&1 < /dev/null &
 echo "started pid $!"
 """
         result = ssh(self.name, "bash -s", input=script, timeout=300)
         if result.returncode != 0:
             raise BrevError(f"starting the job failed ({result.returncode}): {result.stderr[-800:]}")
-        self.started = True
-        self.record["started_at"] = datetime.now(UTC).isoformat(timespec="seconds")
-        self.save_record()
-        log(f"{result.stdout.strip()} on {self.name}; W&B run id {self.wandb_run_id}")
+        if not self.started:
+            self.started = True
+            self.record["started_at"] = datetime.now(UTC).isoformat(timespec="seconds")
+            self.save_record()
+        log(f"{script}.py: {result.stdout.strip()} on {self.name}; W&B run id {self.wandb_run_id}")
 
     # -- 4. follow
 
-    def follow(self) -> int | None:
+    def follow(self, run_dir: str | None = None, log_name: str = "run.log") -> int | None:
         """Stream the log until run_remote.sh writes exit_code. Returns it, or None if the limits are hit."""
-        local_log = self.local_dir / "run.log"
+        run_dir = run_dir or self.remote_run_dir
+        local_log = self.local_dir / log_name
         offset = 0
         failures = 0
         # Setup and training have separate limits; the remote `timeout` enforces the training one, this is a backstop.
         deadline = time.time() + (self.args.max_setup_min + self.args.max_train_min + 10) * 60
         cmd = (
-            f'cd {self.remote_run_dir} && echo "$(cat phase 2>/dev/null)/$(cat exit_code 2>/dev/null)" '
+            f'cd {run_dir} && echo "$(cat phase 2>/dev/null)/$(cat exit_code 2>/dev/null)" '
             f"&& tail -c +{{start}} run.log 2>/dev/null"
         )
         with open(local_log, "ab") as out:
@@ -400,6 +425,26 @@ echo "started pid $!"
                 self.exit_code = int(r.stdout.strip())
                 return
             time.sleep(10)
+
+    # -- 4b. evaluations on the same box
+
+    def run_evals(self) -> None:
+        """play.py for each --eval on this box (Isaac Lab is already installed), recording each exit code."""
+        task = flag_value(self.train_args, "--task")
+        results = self.record.setdefault("evals", {})
+        for spec in self.args.eval:
+            name, overrides = parse_eval_spec(spec)
+            play_args = [
+                "--task", task, "--wandb_run", self.wandb_run_id, "--episodes", str(self.args.eval_episodes),
+                "--eval_name", name, "--headless", *overrides,
+            ]  # fmt: skip
+            log(f"evaluation {name}: play.py {' '.join(play_args)}")
+            run_dir = f"{self.remote_run_dir}-{name}"
+            self.start_remote("play", play_args, run_dir)
+            code = self.follow(run_dir, f"{name}.log")
+            results[name] = code
+            self.save_record()
+            log(f"evaluation {name}: exit code {code}")
 
     # -- 5. verify
 
@@ -545,13 +590,19 @@ echo "started pid $!"
             return default
 
     def run(self) -> int:
-        verified = pulled = False
+        verified = pulled = checked = False
         try:
             self.provision()
             self.start_remote()
             self.exit_code = self.follow()
             if self.exit_code is None:
                 self.interrupt_remote()
+            elif self.exit_code == 0 and self.args.script == "train" and self.args.eval:
+                # Verify first: evaluations need the final checkpoint on W&B.
+                verified = bool(self.safely("verify", self.verify))
+                checked = True
+                if verified:
+                    self.run_evals()
         except KeyboardInterrupt:
             log("Ctrl-C: stopping training and cleaning up (Ctrl-C again skips the cleanup)")
             self.interrupt_remote()
@@ -561,7 +612,7 @@ echo "started pid $!"
             # Each step is isolated: a failure in one (e.g. the Brev API refusing calls for a minute) must not
             # skip the teardown or the record.
             self.record["exit_code"] = self.exit_code
-            if self.exit_code == 0:
+            if self.exit_code == 0 and not checked:
                 # play.py writes its own results (W&B summary, HF); exiting 0 is its success.
                 verified = self.args.script == "play" or bool(self.safely("verify", self.verify))
             if (
@@ -593,6 +644,10 @@ def main(argv: list[str]) -> int:
         brevcli.run_box_name(args.run_name)  # validates the name early
     except ValueError as e:
         raise SystemExit(str(e))
+    for spec in args.eval:
+        parse_eval_spec(spec)  # validate early
+    if args.eval and args.script != "train":
+        raise SystemExit("--eval runs after training; it needs --script train")
     if args.script == "train":
         train_args = build_train_args(train_args, args.run_name)
     else:
