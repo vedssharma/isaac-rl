@@ -23,6 +23,9 @@ Phase 1 of [PLAN.md](../PLAN.md) §6: build our own Isaac Lab environment, with 
 - **Speed cap (§6).** The first policy flew at about 10 m/s, because the stock Crazyflie has no aerodynamic drag.
   The task now adds linear drag (5 m/s top speed) and an over-speed penalty above 3 m/s. Retrained, it still reaches
   the goal in 100% of 1002 episodes, at **3.2 m/s mean and 3.5 m/s peak**, in 4.6 s. This is the default config now.
+- **CTBR ablation (§7).** Collective thrust + body rates (`Drone-Nav-Goal-CTBR-v0`) learns 2.6× faster than thrust +
+  torques, flies more smoothly, and keeps **99.2% success on a 20% heavier drone, where thrust + torques drops to
+  48.5%**. Phase 2 will use CTBR.
 
 ## 1. The task
 
@@ -126,12 +129,12 @@ episode starts. The attitude stays level throughout.*
 
 ## 5. Next steps
 
-1. **CTBR ablation** (the last Phase 1 item in PLAN.md): switch to collective thrust + body rates with a PD rate
-   controller and compare against thrust + torques.
+1. **Done since: the CTBR ablation (§7).**
 2. **More seeds.** These results are one seed. PLAN.md §7 wants 3 for any claim, so run seeds 1 and 2. Each costs
    about $0.80.
 3. **Phase 2:** obstacle terrain, a ray-cast lidar ring, and a curriculum.
-4. Later (PLAN.md §5.5): randomize the drag coefficient along with mass and thrust.
+4. Later (PLAN.md §5.5): randomize mass, thrust and drag during training. §7 shows why: a 20% heavier drone
+   halves the thrust + torque policy's success, and even CTBR loses 0.8%.
 
 ## 6. Speed cap
 
@@ -162,3 +165,65 @@ The cap holds: the peak speed stays within about 0.3 m/s of the 3.25 m/s optimum
 efficiency drops slightly, because slower, dragged flight curves a little more on its way to goals at a different
 heading from the spawn yaw. Training was barely slower: success first passed 98% at iteration 61, against 50 for the
 baseline, with no crashes.
+
+## 7. Action interface: thrust + torques vs CTBR
+
+PLAN.md §4.1 recommends collective thrust + body rates (CTBR) over thrust + body torques for navigation: an inner
+rate loop absorbs attitude dynamics, so the policy learns faster and is less sensitive to model error. This is
+the first ablation in PLAN.md.
+
+**Implementation.** `Drone-Nav-Goal-CTBR-v0` is the same task (speed cap included) with `action_type = "ctbr"`:
+
+- Actions 1–3 are body-rate setpoints, ±(6, 6, 3) rad/s for roll, pitch and yaw. Action 0 is the same collective
+  thrust as before.
+- [`drone_nav/control/rate_controller.py`](../source/drone_nav/drone_nav/control/rate_controller.py) runs a
+  proportional loop every physics substep: τ = I · kp · (ω_cmd − ω), with kp = (25, 25, 15) s⁻¹ (time constants
+  of 40/40/67 ms) and the body's nominal inertia I. Torque is clamped to ±0.01 N·m, the same authority the torque
+  action has.
+- CPU tests ([`tests/test_rate_controller.py`](../tests/test_rate_controller.py)) check the step response at the
+  env's 100 Hz physics rate: it settles within 0.25 s with no overshoot, also with ±20% inertia error.
+
+**Model mismatch for evaluation.** Two env knobs change the true drone while everything the policy and controller
+assume stays nominal:
+
+- `mass_scale`: mass and inertia × s. The thrust command is still scaled for the nominal weight, so this stresses
+  the thrust channel, and the attitude channel a little.
+- `inertia_scale`: inertia only, so it stresses just the attitude channel.
+
+`play.py --eval_name` keeps each condition's results apart (`eval_mass1.2/*` and so on in the W&B summary).
+
+**Results** (seed 42, 500 iterations each; 1000+ deterministic episodes per evaluation; thrust + torques is
+`p1-goal-speedcap-s42`, CTBR is `p1-goal-ctbr-s42`, [W&B](https://forge.coreweave.com/wandb/vedssharma1/isaac-rl/runs/gz36u646),
+[HF](https://huggingface.co/vedssharma/isaac-rl-drone-nav/tree/main/runs/drone_nav_goal_ctbr/2026-11-13_22-17-46_p1-goal-ctbr-s42)):
+
+| | Thrust + torques | CTBR |
+|---|---:|---:|
+| Training: first iteration with ≥ 98% success | 61 | **23** |
+| Final training reward | 21.88 | **22.55** |
+| Body-rate penalty per episode (end of training) | −0.144 | **−0.076** |
+| Action-jerk penalty per episode | −0.0080 | **−0.0053** |
+| **Nominal:** success | 100% | 100% |
+| Nominal: time to goal / mean speed | 4.64 s / 3.18 m/s | 4.62 s / 3.17 m/s |
+| Nominal: path efficiency | 0.969 | **0.980** |
+| **+50% inertia:** success | 100% | 100% |
+| **+20% mass and inertia:** success | 48.5% (51.5% hit the ground) | **99.2%** (95% CI 98.4–99.6; 0.8% hit the ground) |
+
+What it shows:
+
+1. **CTBR learns 2.6× faster** (98% success at iteration 23 instead of 61) and flies with about half the body
+   rotation and smoother actions, for the same speed and success. Path efficiency is a little higher.
+2. **Neither interface cares about +50% inertia** at this gentle 3 m/s flight: the attitude channel isn't the
+   bottleneck yet. The rate loop's advantage there should show up in more agile flight (Phase 2's dodging).
+3. **CTBR is far more robust to a heavier drone: 99.2% against 48.5%.** I expected both to fail, because the
+   collective-thrust channel is identical in the two interfaces and neither policy saw any mass variation in
+   training. They don't fail alike. What the data supports: thrust + torques survives +50% inertia alone, so it is
+   the *combination* that breaks it. A heavier drone needs more tilt and thrust to hold its course, while 20% more
+   inertia makes it rotate more sluggishly. CTBR's rate loop takes the second effect away (the policy still gets
+   the rates it asks for), and the policy compensates for the missing lift. This mechanism is a hypothesis: the
+   evaluations measure the outcome, not why.
+
+**Decision:** use CTBR from Phase 2 on. It learns 2.6× faster, flies more smoothly, and holds up under model
+mismatch that halves the thrust + torque policy's success. Domain randomization (PLAN.md §5.5) is still needed: 0.8%
+of CTBR episodes still hit the ground at +20% mass, and the margin will shrink with obstacles. Caveat: one seed per
+arm, so the 2.6× and the 99% vs 49% should be confirmed with seeds 1 and 2.
+

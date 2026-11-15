@@ -230,7 +230,7 @@ Each phase ends with a **demo video + W&B report**. Don't move on until the exit
 - [x] Scaffold `drone_nav/` as an Isaac Lab extension; register `Drone-Nav-Goal-v0` (Direct workflow)
 - [x] Implement observations, the reward from §4.3 (no obstacle terms yet), terminations and resets
 - [x] `play.py` that loads a checkpoint, records a video and prints metrics
-- [ ] Switch action space to CTBR + rate controller; compare against thrust+torques (your first ablation)
+- [x] Switch action space to CTBR + rate controller; compare against thrust+torques (your first ablation): `Drone-Nav-Goal-CTBR-v0`, see docs/phase1-goal-env.md §7
 - **Exit:** ≥ 98% of episodes reach random goals 10–20 m away; smooth flight in the video.
 
 ### Phase 2 — Obstacles with privileged sensing (weeks 3–5)
