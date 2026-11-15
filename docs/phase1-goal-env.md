@@ -23,9 +23,10 @@ Phase 1 of [PLAN.md](../PLAN.md) §6: build our own Isaac Lab environment, with 
 - **Speed cap (§6).** The first policy flew at about 10 m/s, because the stock Crazyflie has no aerodynamic drag.
   The task now adds linear drag (5 m/s top speed) and an over-speed penalty above 3 m/s. Retrained, it still reaches
   the goal in 100% of 1002 episodes, at **3.2 m/s mean and 3.5 m/s peak**, in 4.6 s. This is the default config now.
-- **CTBR ablation (§7).** Collective thrust + body rates (`Drone-Nav-Goal-CTBR-v0`) learns 2.6× faster than thrust +
-  torques, flies more smoothly, and keeps **99.2% success on a 20% heavier drone, where thrust + torques drops to
-  48.5%**. Phase 2 will use CTBR.
+- **CTBR ablation (§7), 3 seeds.** Collective thrust + body rates (`Drone-Nav-Goal-CTBR-v0`) learns **2.8× faster**
+  than thrust + torques (98% success by iteration 22 ± 1, against 61 ± 3) and rotates about half as much, with
+  the same success. On a 20% heavier drone, both interfaces collapse on some seeds (to 40–50%) and hold on others,
+  so robustness needs mass randomization in training. Phase 2 will use CTBR.
 
 ## 1. The task
 
@@ -130,11 +131,11 @@ episode starts. The attitude stays level throughout.*
 ## 5. Next steps
 
 1. **Done since: the CTBR ablation (§7).**
-2. **More seeds.** These results are one seed. PLAN.md §7 wants 3 for any claim, so run seeds 1 and 2. Each costs
-   about $0.80.
+2. **Done since: seeds 1 and 2** for the speed-capped thrust + torque env and for CTBR (§7). The baseline in
+   §2–3 is still one seed.
 3. **Phase 2:** obstacle terrain, a ray-cast lidar ring, and a curriculum.
 4. Later (PLAN.md §5.5): randomize mass, thrust and drag during training. §7 shows why: a 20% heavier drone
-   halves the thrust + torque policy's success, and even CTBR loses 0.8%.
+   halves the success of 3 of the 6 policies.
 
 ## 6. Speed cap
 
@@ -192,38 +193,43 @@ assume stays nominal:
 
 `play.py --eval_name` keeps each condition's results apart (`eval_mass1.2/*` and so on in the W&B summary).
 
-**Results** (seed 42, 500 iterations each; 1000+ deterministic episodes per evaluation; thrust + torques is
-`p1-goal-speedcap-s42`, CTBR is `p1-goal-ctbr-s42`, [W&B](https://forge.coreweave.com/wandb/vedssharma1/isaac-rl/runs/gz36u646),
-[HF](https://huggingface.co/vedssharma/isaac-rl-drone-nav/tree/main/runs/drone_nav_goal_ctbr/2026-11-13_22-17-46_p1-goal-ctbr-s42)):
+**Results: 3 seeds per interface** (42, 1, 2; 500 iterations each; 1000+ deterministic evaluation episodes per
+condition, run on the training box with `launch.py --eval`). Mean ± standard deviation, then the three seeds:
 
 | | Thrust + torques | CTBR |
-|---|---:|---:|
-| Training: first iteration with ≥ 98% success | 61 | **23** |
-| Final training reward | 21.88 | **22.55** |
-| Body-rate penalty per episode (end of training) | −0.144 | **−0.076** |
-| Action-jerk penalty per episode | −0.0080 | **−0.0053** |
-| **Nominal:** success | 100% | 100% |
-| Nominal: time to goal / mean speed | 4.64 s / 3.18 m/s | 4.62 s / 3.17 m/s |
-| Nominal: path efficiency | 0.969 | **0.980** |
-| **+50% inertia:** success | 100% | 100% |
-| **+20% mass and inertia:** success | 48.5% (51.5% hit the ground) | **99.2%** (95% CI 98.4–99.6; 0.8% hit the ground) |
+|---|---|---|
+| Training: first iteration with ≥ 98% success | 61 ± 3 (61, 64, 58) | **22 ± 1** (23, 22, 21) |
+| Body-rate penalty per episode (end of training) | −0.152 ± 0.012 | **−0.086 ± 0.012** |
+| Nominal success | 100%, 100%, 100% | 100%, 100%, 99.9% |
+| Nominal path efficiency | 0.959 ± 0.020 | 0.967 ± 0.012 |
+| +50% inertia (seed 42 only) | 100% | 100% |
+| **+20% mass and inertia** | 48.5%, 40.2%, 100% | 99.2%, 100%, 45.9% |
+
+W&B runs: thrust + torques [4hw6jj0q](https://forge.coreweave.com/wandb/vedssharma1/isaac-rl/runs/4hw6jj0q),
+[n0cciowd](https://forge.coreweave.com/wandb/vedssharma1/isaac-rl/runs/n0cciowd),
+[pg0bus1k](https://forge.coreweave.com/wandb/vedssharma1/isaac-rl/runs/pg0bus1k); CTBR
+[gz36u646](https://forge.coreweave.com/wandb/vedssharma1/isaac-rl/runs/gz36u646),
+[r868y7wb](https://forge.coreweave.com/wandb/vedssharma1/isaac-rl/runs/r868y7wb),
+[i40am3am](https://forge.coreweave.com/wandb/vedssharma1/isaac-rl/runs/i40am3am). Each run's evaluations are its
+`eval/*` and `eval_mass1.2/*` summary keys.
 
 What it shows:
 
-1. **CTBR learns 2.6× faster** (98% success at iteration 23 instead of 61) and flies with about half the body
-   rotation and smoother actions, for the same speed and success. Path efficiency is a little higher.
-2. **Neither interface cares about +50% inertia** at this gentle 3 m/s flight: the attitude channel isn't the
-   bottleneck yet. The rate loop's advantage there should show up in more agile flight (Phase 2's dodging).
-3. **CTBR is far more robust to a heavier drone: 99.2% against 48.5%.** I expected both to fail, because the
-   collective-thrust channel is identical in the two interfaces and neither policy saw any mass variation in
-   training. They don't fail alike. What the data supports: thrust + torques survives +50% inertia alone, so it is
-   the *combination* that breaks it. A heavier drone needs more tilt and thrust to hold its course, while 20% more
-   inertia makes it rotate more sluggishly. CTBR's rate loop takes the second effect away (the policy still gets
-   the rates it asks for), and the policy compensates for the missing lift. This mechanism is a hypothesis: the
-   evaluations measure the outcome, not why.
+1. **CTBR learns 2.8× faster**, on every seed: 98% success by iteration 21–23, against 58–64. The ranges don't
+   overlap.
+2. **CTBR rotates about half as much** for the same task (body-rate penalty −0.086 against −0.152), at the same
+   speed and success.
+3. **Nominal success and path efficiency are the same.** The efficiency difference is within the seed spread.
+4. **Robustness to a heavier drone depends on the seed, not the interface.** Every seed of both interfaces either
+   holds at about 100% or collapses to 40–50%, with all failures hitting the ground. Two of three thrust + torque
+   seeds collapse, and one of three CTBR seeds. With three seeds that's no evidence either way.
 
-**Decision:** use CTBR from Phase 2 on. It learns 2.6× faster, flies more smoothly, and holds up under model
-mismatch that halves the thrust + torque policy's success. Domain randomization (PLAN.md §5.5) is still needed: 0.8%
-of CTBR episodes still hit the ground at +20% mass, and the margin will shrink with obstacles. Caveat: one seed per
-arm, so the 2.6× and the 99% vs 49% should be confirmed with seeds 1 and 2.
+   **Correction:** with seed 42 alone I concluded that CTBR is far more robust here (99.2% against 48.5%) and
+   offered a mechanism for it. Seeds 1 and 2 show that was luck: seed 42 happened to land on opposite sides for the
+   two interfaces. Neither policy saw any mass variation in training, so whether it learned to correct a hover
+   error is down to chance.
+5. **+50% inertia alone breaks neither** at this gentle 3 m/s flight (seed 42).
 
+**Decision:** use CTBR from Phase 2 on, for the faster learning and smoother flight; these hold on every seed.
+Robustness has to come from training instead: randomize mass, thrust and drag (PLAN.md §5.5). A bimodal result like
+row 6 is what a policy that never saw the variation looks like.
