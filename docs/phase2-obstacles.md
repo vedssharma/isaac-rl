@@ -13,6 +13,7 @@ Status:
 - [x] First training run and held-out evaluation (§5): 88.1% success at level 5 on held-out maps, one seed.
   The exit criterion (≥ 90% success, < 5% collisions) is **not met yet**.
 - [x] Proximity-shaping sweep (§6): no effect on level-5 success or collisions. Shaping isn't the bottleneck.
+- [x] No-poles diagnostic (§7): poles cause about a third of level-5 collisions, but most come from other obstacles.
 - [ ] Ablations
 
 ## 1. Obstacle terrain
@@ -281,3 +282,37 @@ that come from sudden surprises would explain why shaping, which acts on obstacl
 little. It's untested. The cheap check is to evaluate an existing checkpoint at level 5 with poles removed from the
 mix. If collisions drop sharply, the fix is sensing (a finer horizontal ring, which is also PLAN.md's ablation (c)),
 not reward.
+
+## 7. Diagnostic: level 5 without poles
+
+To test §6's hypothesis, I evaluated the §5 checkpoint
+([x7x2fl6t](https://forge.coreweave.com/wandb/vedssharma1/isaac-rl/runs/x7x2fl6t)) at level 5 on the training maps
+with poles removed from the mix (pole weight 0 in `mix_easy` and `mix_hard`, so other obstacles fill their slots).
+The comparison is the same checkpoint on the same seed with poles (§6). No retraining.
+
+| Level 5, training maps | With poles | Without poles |
+|---|---:|---:|
+| Success | 86.8% (95% CI 84.6–88.8%) | **90.2%** (95% CI 88.2–91.9%) |
+| Collisions | 12.9% (95% CI 11.0–15.1%) | **8.6%** (95% CI 7.0–10.5%) |
+| Too high | 0.1% | 1.0% |
+| Closest pass | 0.30 m | 0.30 m |
+| Mean speed / path efficiency | 3.22 m/s / 0.94 | 3.23 m/s / 0.92 |
+
+Removing poles also changes the random draws, so the layouts differ, and a level has only 20 tiles. The size of the
+drop is therefore approximate, but its direction is clear.
+
+- **Poles cause more than their share of collisions.** They are about 16% of level-5 obstacles, but removing them
+  cuts collisions by about a third (12.9% → 8.6%), even though other obstacles fill the freed slots. Per obstacle, a
+  pole is roughly 2.5× as likely as anything else to cause a collision. That fits the 10° ring seeing them late.
+- **But poles aren't the main cause.** With none at all, 8.6% of episodes still end in a collision, well above the
+  5% target. Most collisions come from cylinders, boxes or walls.
+- Too-high crashes rise to 1%. The mix without poles has relatively more walls (about 10% instead of 8%), and a
+  few episodes try to climb over one; it never pays off, since walls are 5 m and the ceiling is 4 m.
+
+**Next candidates:**
+
+1. **A finer lidar ring**, which is PLAN.md ablation (c). A 5° ring (72 × 3 = 216 rays) would see a 6 cm pole from
+   about 0.7 m instead of 0.35 m, and box corners and wall ends earlier. This tests the sensing hypothesis
+   causally, with retraining.
+2. **Recording which obstacle type each collision hits**, to explain the remaining 8.6% instead of guessing.
+3. **Slowing down near obstacles.** The policy cruises at 3.2 m/s through level 5, the same as in open space.
