@@ -9,8 +9,9 @@ Status:
 - [x] Obstacle terrain generator and its CPU tests (§1)
 - [x] `Drone-Nav-Obstacles-v0` (§2): spawning in the strips, lidar ring, collision termination, proximity reward.
   Passed a 30-iteration smoke run on an L40S (§3).
-- [x] Curriculum (§4). CPU-tested, **not run on a GPU yet**.
-- [ ] First training run and held-out evaluation
+- [x] Curriculum (§4)
+- [x] First training run and held-out evaluation (§5): 88.1% success at level 5 on held-out maps, one seed.
+  The exit criterion (≥ 90% success, < 5% collisions) is **not met yet**.
 - [ ] Ablations
 
 ## 1. Obstacle terrain
@@ -184,3 +185,58 @@ that never change.
 
 Not done: PLAN.md §5.3 also suggests a curriculum on goal distance and on the proximity penalty's size. Goal
 distance is fixed by the tile (20–24 m), and the proximity weight stays constant for now.
+
+## 5. First training run
+
+`p2-obstacles-s42`: W&B run [x7x2fl6t](https://forge.coreweave.com/wandb/vedssharma1/isaac-rl/runs/x7x2fl6t),
+commit `8ea755b`, 4096 envs, 1500 iterations, seed 42, with the curriculum. Training took 10 minutes on the L40S
+(0.4 s per iteration, about 240k env steps/s; 1024 envs ran at the same 0.4 s, so the smoke run left the GPU mostly
+idle). The launcher then ran the held-out evaluation on the same box.
+
+**Curriculum.** Every env starts on level 0 and climbs. Fractions of envs per level:
+
+| Iteration | Mostly on | Envs on level 9 | Training success | Collisions | Mean speed |
+|---:|---|---:|---:|---:|---:|
+| 100 | level 1 (93%) | 0% | 95% | 5% | 3.25 m/s |
+| 250 | level 3 (92%) | 0% | 91% | 9% | 3.16 m/s |
+| 500 | level 6 (74%), level 5 (19%) | 0% | 82% | 16% | 3.04 m/s |
+| 750 | levels 7–9 (89%) | 19% | 67% | 29% | 2.98 m/s |
+| 1000 | levels 8–9 (85%) | 60% | 75% | 21% | 3.00 m/s |
+| 1499 | level 9 (84%) | 84% | 83% | 15% | 3.05 m/s |
+
+Training success is measured at whatever level each env is on, so it dips while envs climb and recovers once most of
+them settle at level 9. By the end the policy reaches the goal on 83% of level-9 episodes, the densest level with
+the narrowest gaps. Almost all failures are collisions.
+
+**Held-out evaluation, level 5** (PLAN.md's Phase 2 exit test). 1001 deterministic episodes, every env on level 5,
+on maps from test seed 1001 that training never saw:
+
+| | Held-out level 5 | Exit criterion |
+|---|---:|---:|
+| Success | **88.1%** (95% CI 86.0–90.0%) | ≥ 90% |
+| Collision | **11.4%** (95% CI 9.6–13.5%) | < 5% |
+| Too high | 0.5% | |
+| Time-out, flipped, too low, off course | 0% | |
+| Time to goal | 7.4 s | |
+| Path efficiency | 0.92 | |
+| Mean speed | 3.22 m/s | |
+| Closest obstacle per episode | 0.29 m (mean) | |
+
+So the first run comes close on success and clearly misses on collisions. That's one seed, so it's a baseline, not a
+result.
+
+**What the numbers suggest.** These are hypotheses for the next runs, not conclusions:
+
+- **It flies close.** The mean closest pass is 0.29 m from the drone's centre, against a 0.1 m collision radius. The
+  proximity term costs only −0.5 per episode against +20.7 for progress. At the 0.3 m sigma it barely changes the
+  trade-off, so a stronger or wider proximity term (weight or `proximity_sigma`) is the obvious first knob.
+- **It doesn't slow down near obstacles.** The mean speed is 3.2 m/s, the same as open-field cruising. Nothing in
+  the reward asks for slowing down, and the speed penalty only starts above 3 m/s.
+- **Held-out maps vs. level 5 itself.** The policy ended training almost entirely on level 9 and was never tested on
+  training-seed level-5 maps. An evaluation there would show whether the 88% comes from new maps or from level 5
+  itself (for example forgetting easier layouts, though level 5 should be easier than level 9).
+- **0.5% too high:** a few episodes climb above 4 m. Obstacles are 5 m tall, so climbing never pays off; worth
+  watching in a video.
+
+Next: a training-seed level-5 evaluation, a proximity-shaping sweep, then 3 seeds of whatever wins. The PLAN.md
+ablations (no proximity, no curriculum, number of rays) come after that.
