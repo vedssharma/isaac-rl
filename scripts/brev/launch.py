@@ -114,6 +114,24 @@ def flag_value(args: list[str], flag: str) -> str | None:
     return None
 
 
+def hydra_key(arg: str) -> str | None:
+    """'env.rewards.proximity=3.0' -> 'env.rewards.proximity'; None for anything that isn't an env./agent. override
+    (flags, flag values)."""
+    key, eq, _ = arg.partition("=")
+    if not eq or arg.startswith("-") or not key.lstrip("+~").startswith(("env.", "agent.")):
+        return None
+    return key.lstrip("+~")
+
+
+def eval_play_overrides(train_args: list[str], eval_overrides: list[str]) -> list[str]:
+    """The overrides play.py gets for one --eval: the training run's env./agent. overrides, so it evaluates the env
+    the policy was trained in (a changed observation would not even load), then the eval's own. Where both set a
+    key, the eval's wins, and the training one is dropped (Hydra rejects a key given twice)."""
+    eval_keys = {hydra_key(o) for o in eval_overrides} - {None}
+    inherited = [a for a in train_args if hydra_key(a) is not None and hydra_key(a) not in eval_keys]
+    return inherited + list(eval_overrides)
+
+
 def parse_eval_spec(spec: str) -> tuple[str, list[str]]:
     """'eval_mass1.2:env.mass_scale=1.2,env.foo=1' -> ('eval_mass1.2', ['env.mass_scale=1.2', 'env.foo=1'])."""
     name, _, overrides = spec.partition(":")
@@ -447,7 +465,7 @@ echo "started pid $!"
             name, overrides = parse_eval_spec(spec)
             play_args = [
                 "--task", task, "--wandb_run", self.wandb_run_id, "--episodes", str(self.args.eval_episodes),
-                "--eval_name", name, "--headless", *overrides,
+                "--eval_name", name, "--headless", *eval_play_overrides(self.train_args, overrides),
             ]  # fmt: skip
             log(f"evaluation {name}: play.py {' '.join(play_args)}")
             run_dir = f"{self.remote_run_dir}-{name}"
