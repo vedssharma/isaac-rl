@@ -9,7 +9,7 @@ Status:
 - [x] Obstacle terrain generator and its CPU tests (§1)
 - [x] `Drone-Nav-Obstacles-v0` (§2): spawning in the strips, lidar ring, collision termination, proximity reward.
   Passed a 30-iteration smoke run on an L40S (§3).
-- [ ] Curriculum
+- [x] Curriculum (§4). CPU-tested, **not run on a GPU yet**.
 - [ ] First training run and held-out evaluation
 - [ ] Ablations
 
@@ -101,8 +101,7 @@ was the Phase 1 decision). The obstacle-specific math is plain torch in
 - **New metrics**: `Episode_Termination/collision`, `Episode_Reward/proximity`, `Metrics/min_obstacle_distance`
   (closest an obstacle came during the episode) and `Curriculum/terrain_level`.
 
-**No curriculum yet.** Envs start on random levels 0–9 and stay there. That doubles as ablation (b), "no
-curriculum", once the curriculum exists.
+**Curriculum**: see §4. The smoke run below predates it; it put envs on random levels 0–2 that never changed.
 
 **Evaluation.** `env.eval_terrain_level=5` puts every env on level 5 (the Phase 2 exit criterion), and
 `env.terrain.terrain_generator.seed=1001` swaps in held-out maps:
@@ -157,3 +156,31 @@ It took four launches to get here, each failing a little later than the one befo
 
 A separate bug turned up along the way: `launch.py` printed its whole start script, API keys included, to the
 terminal. Every earlier launch did too. That's fixed and tested, and the keys should be rotated.
+
+## 4. Curriculum
+
+PLAN.md §5.3, in [`mdp/curriculum.py`](../source/drone_nav/drone_nav/mdp/curriculum.py) (tests:
+[`tests/test_curriculum.py`](../tests/test_curriculum.py)). Every env starts on level 0. Each env keeps a window of
+its last 5 episodes; once the window is full, the env moves up a level if at least 80% of them reached the goal,
+and down a level if fewer than 40% did. Crashes and time-outs both count as failures. A move clears the window, so
+the next decision is based only on episodes at the new level. The env moves before it respawns, so its next episode
+is on the new tile.
+
+One deliberate difference from Isaac Lab's own `TerrainImporter.update_env_origins`, which sends an env that passes
+the top level to a random level: here it stays at level 9. Phase 2 is judged on the hard levels, and moving down
+still catches an env that starts failing.
+
+Rough pace: an episode is 5–10 s and a 1500-iteration run gives each env about 720 s of flying, so roughly 70–140
+episodes. At 5 episodes per move, an env can climb from level 0 to 9 in about 45 episodes if it never fails.
+
+**Logged:** `Curriculum/terrain_level` (the level each finished episode was played on) and
+`Curriculum/level_0` … `level_9`, the fraction of envs on each level. That's the difficulty histogram PLAN.md calls
+the best progress chart.
+
+**Settings** (Hydra, under `env.`): `curriculum`, `curriculum_window`, `curriculum_up_rate` and
+`curriculum_down_rate`. Write the rates as floats. Evaluation (`eval_terrain_level` ≥ 0) turns the curriculum off.
+Ablation (b), no curriculum, is `env.curriculum=False env.terrain.max_init_terrain_level=9`: envs on random levels
+that never change.
+
+Not done: PLAN.md §5.3 also suggests a curriculum on goal distance and on the proximity penalty's size. Goal
+distance is fixed by the tile (20–24 m), and the proximity weight stays constant for now.
