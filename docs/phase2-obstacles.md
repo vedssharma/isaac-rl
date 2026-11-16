@@ -96,7 +96,8 @@ was the Phase 1 decision). The obstacle-specific math is plain torch in
 - **Proximity reward** (PLAN.md §4.3): −1 × exp(−clearance / 0.3 m) per second, where clearance is the closest
   horizontal hit minus the 0.1 m collision radius. That costs 1 per second at contact, 0.37 at 0.3 m clearance and
   about 0 past 1 m. Progress at the 3.25 m/s cruise speed earns about 3.25 per second, so brushing past an obstacle
-  is cheaper than a long detour. `env.rewards.proximity=0` is ablation (a).
+  is cheaper than a long detour. `env.rewards.proximity=0.0` is ablation (a). Write it as a float: Isaac Lab
+  rejects a Hydra override whose type differs from the default's, and a `None` default can't be overridden at all.
 - **New metrics**: `Episode_Termination/collision`, `Episode_Reward/proximity`, `Metrics/min_obstacle_distance`
   (closest an obstacle came during the episode) and `Curriculum/terrain_level`.
 

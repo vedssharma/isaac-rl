@@ -33,7 +33,7 @@ GOAL_OBS_DIM = DroneNavGoalCTBREnvCfg().observation_space
 
 @configclass
 class ObstacleRewardWeightsCfg(RewardWeightsCfg):
-    proximity: float = 1.0  # per second, x exp(-clearance / proximity_sigma); 0 turns proximity shaping off
+    proximity: float = 1.0  # per second, x exp(-clearance / proximity_sigma); 0.0 turns proximity shaping off
 
 
 @configclass
@@ -46,7 +46,9 @@ class DroneNavObstaclesEnvCfg(DroneNavGoalCTBREnvCfg):
         prim_path="/World/ground",
         terrain_type="generator",
         terrain_generator=OBSTACLE_FIELD_GENERATOR_CFG,
-        max_init_terrain_level=None,  # every difficulty level from the start (no curriculum yet)
+        # Envs start on random rows 0..this, so 9 is every difficulty level (no curriculum yet). An int, not None:
+        # Isaac Lab's Hydra overrides must match the default's type, so a None default can't be set to a level.
+        max_init_terrain_level=9,
         collision_group=-1,
         physics_material=sim_utils.RigidBodyMaterialCfg(
             friction_combine_mode="multiply",
@@ -76,8 +78,9 @@ class DroneNavObstaclesEnvCfg(DroneNavGoalCTBREnvCfg):
 
     # Spawn and goal points stay this far inside the start and goal strips (from their edges and the side walls).
     strip_margin = 0.5
-    # Evaluation: put every env on this difficulty row (0-9) instead of random ones. None for training.
-    eval_terrain_level: int | None = None
+    # Evaluation: put every env on this difficulty row (0-9) instead of random ones. -1 (off) for training; an int
+    # rather than None so that Hydra can override it (see max_init_terrain_level).
+    eval_terrain_level: int = -1
 
     rewards: ObstacleRewardWeightsCfg = ObstacleRewardWeightsCfg()
 
@@ -107,7 +110,7 @@ class DroneNavObstaclesEnv(DroneNavGoalEnv):
         self._min_dist_episode = torch.full((n,), self._max_range, device=dev)
         self._episode_sums["proximity"] = torch.zeros(n, device=dev)
 
-        if self.cfg.eval_terrain_level is not None:
+        if self.cfg.eval_terrain_level >= 0:
             t = self._terrain
             level = self.cfg.eval_terrain_level
             if not 0 <= level < t.terrain_origins.shape[0]:
