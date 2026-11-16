@@ -236,3 +236,9 @@ def test_isaac_lab_cfg_has_the_same_fields_as_the_params():
     )
     cfg_fields = {s.target.id for s in cls.body if isinstance(s, ast.AnnAssign)}
     assert cfg_fields == {f.name for f in fields(of.ObstacleFieldParams)}
+
+
+def test_spawn_and_goal_regions_are_plain_floats():
+    for region in of.spawn_and_goal_regions(P):
+        for lo_hi in region:
+            assert all(type(v) is float for v in lo_hi)

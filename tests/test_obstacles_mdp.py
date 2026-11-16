@@ -86,3 +86,11 @@ def test_sample_in_box():
     for axis, (lo, hi) in enumerate([(-0.9, 0.9), (-4.7, 4.7), (1.0, 1.5)]):
         assert pts[:, axis].min() >= lo and pts[:, axis].max() <= hi
         assert pts[:, axis].max() - pts[:, axis].min() > 0.95 * (hi - lo)  # covers the box
+
+
+def test_sample_in_box_is_float32_even_from_numpy_bounds():
+    """The env's strip bounds come from numpy; Isaac Lab's buffers are float32 and refuse float64 writes."""
+    import numpy as np
+
+    box = ((np.float64(-0.5), np.float64(0.5)), (np.float64(-4.3), np.float64(4.3)))
+    assert mdp.sample_in_box(4, box, (np.float64(1.0), 1.5)).dtype == torch.float32

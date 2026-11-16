@@ -381,7 +381,7 @@ def spawn_and_goal_regions(p: ObstacleFieldParams, margin: float | None = None):
     """((xmin, xmax), (ymin, ymax)) for spawning and for goals, relative to `terrain_origin`. Both strips are
     shrunk by `margin` (default: drone_radius) from their edges and from the side walls."""
     m = p.drone_radius if margin is None else margin
-    ox, oy, _ = terrain_origin(p)
+    ox, oy, _ = (float(v) for v in terrain_origin(p))  # plain floats, not numpy float64
     y0, y1 = p.inner_y
     ys = (y0 + m - oy, y1 - m - oy)
     start = ((m - ox, p.start_zone - m - ox), ys)

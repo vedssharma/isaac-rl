@@ -80,6 +80,8 @@ def sample_in_box(
 ) -> torch.Tensor:
     """(n, 3) uniform points: x and y in box = ((xmin, xmax), (ymin, ymax)), relative to the env origin, and an
     absolute altitude in z_range (env origins are on the ground)."""
-    lows = torch.tensor([box[0][0], box[1][0], z_range[0]], device=device)
-    highs = torch.tensor([box[0][1], box[1][1], z_range[1]], device=device)
+    # float32 whatever the bounds are: numpy float64 bounds would otherwise make a float64 tensor, which Isaac Lab's
+    # float32 buffers refuse.
+    lows = torch.tensor([float(box[0][0]), float(box[1][0]), float(z_range[0])], dtype=torch.float32, device=device)
+    highs = torch.tensor([float(box[0][1]), float(box[1][1]), float(z_range[1])], dtype=torch.float32, device=device)
     return lows + torch.rand(n, 3, device=device, generator=generator) * (highs - lows)
