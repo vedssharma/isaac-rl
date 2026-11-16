@@ -7,10 +7,11 @@ terrain (drone_nav/terrain/obstacle_field.py), plus:
 - a privileged ray-cast "lidar ring" in the observation (PLAN.md §4.2, the Phase 2 teacher's sensing): 3 channels
   at -15 / 0 / +15 degrees x 36 rays, 5 m range, kept level with the horizon (it follows the drone's yaw only);
 - a collision termination when the horizontal channel sees an obstacle within collision_radius of the drone's
-  centre (it counts as a crash), and a proximity reward term on the same distance.
+  centre (it counts as a crash), and a proximity reward term on the same distance;
+- a curriculum (PLAN.md §5.3): every env starts on level 0 and moves up or down a level on its recent success rate.
 
-The math is in drone_nav/mdp/obstacles.py. No curriculum yet: envs start on random difficulty levels and stay
-there. eval_terrain_level puts every env on one level, for evaluation; held-out maps come from a terrain seed in
+The math is in drone_nav/mdp/obstacles.py and drone_nav/mdp/curriculum.py. eval_terrain_level puts every env on one
+level (and turns the curriculum off), for evaluation; held-out maps come from a terrain seed in
 obstacle_field.TEST_SEEDS (Hydra: env.terrain.terrain_generator.seed=1001).
 """
 
@@ -24,6 +25,7 @@ from isaaclab.terrains import TerrainImporterCfg
 from isaaclab.utils import configclass
 
 from drone_nav.mdp import obstacles as obs_mdp
+from drone_nav.mdp.curriculum import SuccessCurriculum, level_fractions
 from drone_nav.tasks.goal.goal_env import DroneNavGoalCTBREnvCfg, DroneNavGoalEnv, RewardWeightsCfg
 from drone_nav.terrain.obstacle_field import ObstacleFieldParams, spawn_and_goal_regions
 from drone_nav.terrain.obstacle_field_cfg import OBSTACLE_FIELD_GENERATOR_CFG
@@ -53,9 +55,10 @@ class DroneNavObstaclesEnvCfg(DroneNavGoalCTBREnvCfg):
         prim_path="/World/ground",
         terrain_type="generator",
         terrain_generator=OBSTACLE_FIELD_GENERATOR_CFG,
-        # Envs start on random rows 0..this, so 9 is every difficulty level (no curriculum yet). An int, not None:
-        # Isaac Lab's Hydra overrides must match the default's type, so a None default can't be set to a level.
-        max_init_terrain_level=9,
+        # Envs start on random rows 0..this: 0 for the curriculum, which then moves each env up and down; 9 (every
+        # level) for training without it. An int, not None: Isaac Lab's Hydra overrides must match the default's
+        # type, so a None default can't be set to a level.
+        max_init_terrain_level=0,
         collision_group=-1,
         physics_material=sim_utils.RigidBodyMaterialCfg(
             friction_combine_mode="multiply",
@@ -88,6 +91,15 @@ class DroneNavObstaclesEnvCfg(DroneNavGoalCTBREnvCfg):
     # Evaluation: put every env on this difficulty row (0-9) instead of random ones. -1 (off) for training; an int
     # rather than None so that Hydra can override it (see max_init_terrain_level).
     eval_terrain_level: int = -1
+
+    # Curriculum (PLAN.md §5.3, drone_nav/mdp/curriculum.py): once an env has `curriculum_window` episodes at its
+    # level, it moves up if at least curriculum_up_rate of them reached the goal and down if fewer than
+    # curriculum_down_rate did. Off during evaluation (eval_terrain_level >= 0). Ablation (b), no curriculum:
+    # env.curriculum=False env.terrain.max_init_terrain_level=9.
+    curriculum: bool = True
+    curriculum_window: int = 5
+    curriculum_up_rate: float = 0.8
+    curriculum_down_rate: float = 0.4
 
     rewards: ObstacleRewardWeightsCfg = ObstacleRewardWeightsCfg()
 
@@ -129,6 +141,20 @@ class DroneNavObstaclesEnv(DroneNavGoalEnv):
                 raise ValueError(f"eval_terrain_level must be in [0, {t.terrain_origins.shape[0]}), not {level}")
             t.terrain_levels[:] = level
             t.env_origins[:] = t.terrain_origins[t.terrain_levels, t.terrain_types]
+
+        self._num_levels = self._terrain.terrain_origins.shape[0]
+        self._curriculum = None
+        if self.cfg.curriculum and self.cfg.eval_terrain_level < 0:
+            self._curriculum = SuccessCurriculum(
+                n,
+                self._num_levels,
+                self.cfg.curriculum_window,
+                self.cfg.curriculum_up_rate,
+                self.cfg.curriculum_down_rate,
+                device=dev,
+            )
+        # The level each env's current episode is played on (the terrain's level can change at the episode's end).
+        self._episode_level = self._terrain.terrain_levels.clone()
 
     def _add_sensors(self):
         self._lidar = RayCaster(self.cfg.lidar)
@@ -174,7 +200,15 @@ class DroneNavObstaclesEnv(DroneNavGoalEnv):
     def _reset_idx(self, env_ids: torch.Tensor | None):
         if env_ids is None or len(env_ids) == self.num_envs:
             env_ids = self._robot._ALL_INDICES
-        super()._reset_idx(env_ids)
+        ended = env_ids[self.episode_length_buf[env_ids] > 0]  # not the first reset of a fresh env
+        if self._curriculum is not None and len(ended) > 0:
+            # Move envs between levels before super() respawns them, so they start on their new tile.
+            t = self._terrain
+            success = self._terms["goal"][ended]
+            t.terrain_levels[ended] = self._curriculum.update(ended, success, t.terrain_levels[ended])
+            t.env_origins[ended] = t.terrain_origins[t.terrain_levels[ended], t.terrain_types[ended]]
+        super()._reset_idx(env_ids)  # logs the ended episodes (at _episode_level), then respawns
+        self._episode_level[env_ids] = self._terrain.terrain_levels[env_ids]
         self._min_dist_episode[env_ids] = self._max_range
 
     def _sample_goal_offsets(self, n: int) -> torch.Tensor:
@@ -193,4 +227,7 @@ class DroneNavObstaclesEnv(DroneNavGoalEnv):
             return
         # Closest an obstacle came to the drone's centre during the episode (horizontal, capped at the lidar range).
         log["Metrics/min_obstacle_distance"] = self._min_dist_episode[ended]
-        log["Curriculum/terrain_level"] = self._terrain.terrain_levels[ended].float()
+        log["Curriculum/terrain_level"] = self._episode_level[ended].float()  # the level each episode was played on
+        # Difficulty histogram over all envs (PLAN.md §5.3: "your best progress chart").
+        for level, fraction in enumerate(level_fractions(self._terrain.terrain_levels, self._num_levels)):
+            log[f"Curriculum/level_{level}"] = fraction

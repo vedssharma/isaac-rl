@@ -198,3 +198,21 @@ def test_start_remote_never_prints_secrets(monkeypatch, tmp_path, capsys):
     assert not any(v in out for v in secrets.values())
     assert "train.py: started pid 4242" in out
     assert "RUN_SCRIPT=scripts/train.py" in sent["input"]
+
+
+def test_preflight_survives_a_brief_brev_api_outage(monkeypatch, capsys):
+    """Several launchers starting together can hit the Brev API's rate limit; the preflight must retry, not die."""
+    calls = []
+
+    def flaky_brev(*args, **kwargs):
+        calls.append(args)
+        if len(calls) <= 2:
+            raise launch.BrevError("brev ls failed (1): resource exhausted")
+        return launch.subprocess.CompletedProcess(["brev"], 0, "[]", "")
+
+    monkeypatch.setattr(launch.brevcli, "brev", flaky_brev)
+    monkeypatch.setattr(launch.brevcli.time, "sleep", lambda s: None)
+    monkeypatch.setattr(launch, "load_env", lambda path: None)
+    monkeypatch.setattr(launch, "resolve_commit", lambda ref, dirty: ("0" * 40, "url"))
+    assert launch.main(["--run-name", "p0-x-s1", "--dry-run", "--", "--task", "T"]) == 0
+    assert len(calls) == 3

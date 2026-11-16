@@ -9,8 +9,10 @@ Status:
 - [x] Obstacle terrain generator and its CPU tests (§1)
 - [x] `Drone-Nav-Obstacles-v0` (§2): spawning in the strips, lidar ring, collision termination, proximity reward.
   Passed a 30-iteration smoke run on an L40S (§3).
-- [ ] Curriculum
-- [ ] First training run and held-out evaluation
+- [x] Curriculum (§4)
+- [x] First training run and held-out evaluation (§5): 88.1% success at level 5 on held-out maps, one seed.
+  The exit criterion (≥ 90% success, < 5% collisions) is **not met yet**.
+- [x] Proximity-shaping sweep (§6): no effect on level-5 success or collisions. Shaping isn't the bottleneck.
 - [ ] Ablations
 
 ## 1. Obstacle terrain
@@ -101,8 +103,7 @@ was the Phase 1 decision). The obstacle-specific math is plain torch in
 - **New metrics**: `Episode_Termination/collision`, `Episode_Reward/proximity`, `Metrics/min_obstacle_distance`
   (closest an obstacle came during the episode) and `Curriculum/terrain_level`.
 
-**No curriculum yet.** Envs start on random levels 0–9 and stay there. That doubles as ablation (b), "no
-curriculum", once the curriculum exists.
+**Curriculum**: see §4. The smoke run below predates it; it put envs on random levels 0–2 that never changed.
 
 **Evaluation.** `env.eval_terrain_level=5` puts every env on level 5 (the Phase 2 exit criterion), and
 `env.terrain.terrain_generator.seed=1001` swaps in held-out maps:
@@ -157,3 +158,126 @@ It took four launches to get here, each failing a little later than the one befo
 
 A separate bug turned up along the way: `launch.py` printed its whole start script, API keys included, to the
 terminal. Every earlier launch did too. That's fixed and tested, and the keys should be rotated.
+
+## 4. Curriculum
+
+PLAN.md §5.3, in [`mdp/curriculum.py`](../source/drone_nav/drone_nav/mdp/curriculum.py) (tests:
+[`tests/test_curriculum.py`](../tests/test_curriculum.py)). Every env starts on level 0. Each env keeps a window of
+its last 5 episodes; once the window is full, the env moves up a level if at least 80% of them reached the goal,
+and down a level if fewer than 40% did. Crashes and time-outs both count as failures. A move clears the window, so
+the next decision is based only on episodes at the new level. The env moves before it respawns, so its next episode
+is on the new tile.
+
+One deliberate difference from Isaac Lab's own `TerrainImporter.update_env_origins`, which sends an env that passes
+the top level to a random level: here it stays at level 9. Phase 2 is judged on the hard levels, and moving down
+still catches an env that starts failing.
+
+Rough pace: an episode is 5–10 s and a 1500-iteration run gives each env about 720 s of flying, so roughly 70–140
+episodes. At 5 episodes per move, an env can climb from level 0 to 9 in about 45 episodes if it never fails.
+
+**Logged:** `Curriculum/terrain_level` (the level each finished episode was played on) and
+`Curriculum/level_0` … `level_9`, the fraction of envs on each level. That's the difficulty histogram PLAN.md calls
+the best progress chart.
+
+**Settings** (Hydra, under `env.`): `curriculum`, `curriculum_window`, `curriculum_up_rate` and
+`curriculum_down_rate`. Write the rates as floats. Evaluation (`eval_terrain_level` ≥ 0) turns the curriculum off.
+Ablation (b), no curriculum, is `env.curriculum=False env.terrain.max_init_terrain_level=9`: envs on random levels
+that never change.
+
+Not done: PLAN.md §5.3 also suggests a curriculum on goal distance and on the proximity penalty's size. Goal
+distance is fixed by the tile (20–24 m), and the proximity weight stays constant for now.
+
+## 5. First training run
+
+`p2-obstacles-s42`: W&B run [x7x2fl6t](https://forge.coreweave.com/wandb/vedssharma1/isaac-rl/runs/x7x2fl6t),
+commit `8ea755b`, 4096 envs, 1500 iterations, seed 42, with the curriculum. Training took 10 minutes on the L40S
+(0.4 s per iteration, about 240k env steps/s; 1024 envs ran at the same 0.4 s, so the smoke run left the GPU mostly
+idle). The launcher then ran the held-out evaluation on the same box.
+
+**Curriculum.** Every env starts on level 0 and climbs. Fractions of envs per level:
+
+| Iteration | Mostly on | Envs on level 9 | Training success | Collisions | Mean speed |
+|---:|---|---:|---:|---:|---:|
+| 100 | level 1 (93%) | 0% | 95% | 5% | 3.25 m/s |
+| 250 | level 3 (92%) | 0% | 91% | 9% | 3.16 m/s |
+| 500 | level 6 (74%), level 5 (19%) | 0% | 82% | 16% | 3.04 m/s |
+| 750 | levels 7–9 (89%) | 19% | 67% | 29% | 2.98 m/s |
+| 1000 | levels 8–9 (85%) | 60% | 75% | 21% | 3.00 m/s |
+| 1499 | level 9 (84%) | 84% | 83% | 15% | 3.05 m/s |
+
+Training success is measured at whatever level each env is on, so it dips while envs climb and recovers once most of
+them settle at level 9. By the end the policy reaches the goal on 83% of level-9 episodes, the densest level with
+the narrowest gaps. Almost all failures are collisions.
+
+**Held-out evaluation, level 5** (PLAN.md's Phase 2 exit test). 1001 deterministic episodes, every env on level 5,
+on maps from test seed 1001 that training never saw:
+
+| | Held-out level 5 | Exit criterion |
+|---|---:|---:|
+| Success | **88.1%** (95% CI 86.0–90.0%) | ≥ 90% |
+| Collision | **11.4%** (95% CI 9.6–13.5%) | < 5% |
+| Too high | 0.5% | |
+| Time-out, flipped, too low, off course | 0% | |
+| Time to goal | 7.4 s | |
+| Path efficiency | 0.92 | |
+| Mean speed | 3.22 m/s | |
+| Closest obstacle per episode | 0.29 m (mean) | |
+
+So the first run comes close on success and clearly misses on collisions. That's one seed, so it's a baseline, not a
+result.
+
+**What the numbers suggest.** These are hypotheses for the next runs, not conclusions:
+
+- **It flies close.** The mean closest pass is 0.29 m from the drone's centre, against a 0.1 m collision radius. The
+  proximity term costs only −0.5 per episode against +20.7 for progress. At the 0.3 m sigma it barely changes the
+  trade-off, so a stronger or wider proximity term (weight or `proximity_sigma`) is the obvious first knob.
+- **It doesn't slow down near obstacles.** The mean speed is 3.2 m/s, the same as open-field cruising. Nothing in
+  the reward asks for slowing down, and the speed penalty only starts above 3 m/s.
+- **Held-out maps vs. level 5 itself.** The policy ended training almost entirely on level 9 and was never tested on
+  training-seed level-5 maps. An evaluation there would show whether the 88% comes from new maps or from level 5
+  itself (for example forgetting easier layouts, though level 5 should be easier than level 9).
+- **0.5% too high:** a few episodes climb above 4 m. Obstacles are 5 m tall, so climbing never pays off; worth
+  watching in a video.
+
+Next: a training-seed level-5 evaluation, a proximity-shaping sweep, then 3 seeds of whatever wins. The PLAN.md
+ablations (no proximity, no curriculum, number of rays) come after that.
+
+## 6. Proximity-shaping sweep
+
+§5 left the policy colliding on about 11% of level-5 episodes, with its closest pass at 0.29 m, so the first
+suspect was the proximity term (−w exp(−clearance / σ), baseline w = 1.0, σ = 0.3 m). Three variants, otherwise
+identical to §5 (seed 42, 4096 envs, 1500 iterations, curriculum on). Each was evaluated at level 5 on held-out maps
+(test seed 1001) and on the training maps (seed 0). The baseline got the training-map evaluation afterwards, from
+its saved checkpoint.
+
+| Run | w | σ | Held-out L5: success / collisions | Training maps L5: success / collisions | Closest pass (held-out) |
+|---|---:|---:|---:|---:|---:|
+| `p2-obstacles-s42` ([x7x2fl6t](https://forge.coreweave.com/wandb/vedssharma1/isaac-rl/runs/x7x2fl6t)) | 1.0 | 0.3 | 88.1% / 11.4% | 86.8% / 12.9% | 0.29 m |
+| `p2-prox-w3-s42` ([s3wi4bgh](https://forge.coreweave.com/wandb/vedssharma1/isaac-rl/runs/s3wi4bgh)) | 3.0 | 0.3 | 81.6% / 17.9% | 86.8% / 12.2% | 0.28 m |
+| `p2-prox-sig06-s42` ([lbzgjbn9](https://forge.coreweave.com/wandb/vedssharma1/isaac-rl/runs/lbzgjbn9)) | 1.0 | 0.6 | 87.8% / 12.1% | 87.1% / 12.6% | 0.30 m |
+| `p2-prox-w3-sig06-s42` ([t9os0rrz](https://forge.coreweave.com/wandb/vedssharma1/isaac-rl/runs/t9os0rrz)) | 3.0 | 0.6 | 87.1% / 10.7% | 87.1% / 12.2% | 0.34 m |
+
+Each cell is 1000 episodes; binomial 95% CIs are about ±2 points. All four runs climbed the curriculum the same
+way (78–84% of envs on level 9 at the end) and fly at the same 3.1–3.2 m/s.
+
+What it shows:
+
+1. **The proximity term doesn't change level-5 performance.** On the training maps all four settings land at
+   86.8–87.1% success and 12.2–12.9% collisions, which is noise. Tripling the weight and doubling the width
+   (about 4× the penalty at 0.2 m clearance) moves the closest pass from 0.29 to 0.34 m and nothing else.
+   Stronger shaping reduces how long the drone flies near obstacles: the w = 3 runs pay less proximity penalty
+   in total than the baseline does at w = 1. But the closest pass and the collision rate barely move.
+2. **New maps aren't the problem either.** Each policy scores about the same on held-out and training maps. The
+   exception, `w3` at 81.6% held-out vs 86.8% on training maps, is best explained by the next point.
+3. **The evaluation set is small.** A level has 20 tiles, so 1000 episodes cover just 20 layouts. Two runs can
+   differ by a few points on one map set simply because one layout is harder, and the binomial CI doesn't
+   include that map-to-map spread. Future evaluations should cover more layouts: all three test seeds, 60 tiles.
+4. Evaluations now run with 1024 envs (`--num_envs=1024` in the `--eval` spec). That took one from 19 minutes to
+   under 2. The baseline's held-out number in §5 used 256 envs.
+
+**Working hypothesis: the drone doesn't see thin poles in time.** Poles are 6–12 cm across and the ring's rays are
+10° apart, so a pole falls between rays until it is within about 0.35–0.7 m, which is 0.1–0.2 s at 3 m/s. Collisions
+that come from sudden surprises would explain why shaping, which acts on obstacles the drone can see, changes so
+little. It's untested. The cheap check is to evaluate an existing checkpoint at level 5 with poles removed from the
+mix. If collisions drop sharply, the fix is sensing (a finer horizontal ring, which is also PLAN.md's ablation (c)),
+not reward.
