@@ -16,4 +16,4 @@ See [PLAN.md](PLAN.md) for the full project plan and roadmap.
 
 - [Phase 0 wrap-up: our own `train.py` and the first drone videos](docs/phase0-train-wrapper-and-video.md)
 - [Phase 1: our own environment, `Drone-Nav-Goal-v0`](docs/phase1-goal-env.md): 100% success on goals 10–20 m away, speed-capped at about 3 m/s
-- [Phase 2: obstacles](docs/phase2-obstacles.md): the procedural obstacle terrain (in progress)
+- [Phase 2: obstacles](docs/phase2-obstacles.md): the procedural obstacle terrain and `Drone-Nav-Obstacles-v0` (in progress)
