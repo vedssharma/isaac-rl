@@ -11,10 +11,26 @@ import math
 import torch
 
 # Reward terms, in the order they are logged (Episode_Reward/<name>).
-REWARD_TERMS = ("progress", "goal", "crash", "smooth", "ang_rate", "upright", "time")
+REWARD_TERMS = ("progress", "goal", "crash", "smooth", "ang_rate", "upright", "time", "overspeed")
 # Why an episode ended (Episode_Termination/<name>). "goal" and the crash reasons are terminal; "time_out"
 # is a truncation, so PPO bootstraps through it instead of treating it as a death.
 CRASH_REASONS = ("too_low", "too_high", "flipped", "off_course")
+
+
+def linear_drag_coefficient(weight: float, thrust_to_weight: float, terminal_speed: float) -> float:
+    """Drag coefficient k (N per m/s) for a drag force -k v, chosen so the top horizontal speed is terminal_speed.
+
+    At full thrust T = thrust_to_weight x weight, holding altitude leaves a horizontal force of
+    sqrt(T^2 - weight^2) at most, which balances drag k v at v = terminal_speed. Isaac Lab's Crazyflie has no
+    aerodynamic drag at all, so without this a policy accelerates to 10+ m/s (Phase 1 baseline).
+    """
+    return math.sqrt(thrust_to_weight**2 - 1.0) * weight / terminal_speed
+
+
+def drag_force(lin_vel: torch.Tensor, k: float) -> torch.Tensor:
+    """Linear drag, -k v. Works in any frame (rotation commutes with scaling): pass body-frame velocity to get a
+    body-frame force."""
+    return -k * lin_vel
 
 
 def sample_goal_offsets(
@@ -79,6 +95,8 @@ def compute_reward_terms(
     prev_action: torch.Tensor,
     ang_vel_b: torch.Tensor,
     upz: torch.Tensor,
+    speed: torch.Tensor,
+    speed_limit: float,
     step_dt: float,
     weights: dict[str, float],
 ) -> dict[str, torch.Tensor]:
@@ -96,4 +114,6 @@ def compute_reward_terms(
         "ang_rate": -weights["ang_rate"] * ang_vel_b.square().sum(dim=-1) * step_dt,
         "upright": -weights["upright"] * (1.0 - upz) * step_dt,
         "time": -weights["time"] * torch.ones_like(dist) * step_dt,
+        # Soft speed cap: quadratic in the excess over speed_limit (m/s), zero below it.
+        "overspeed": -weights["overspeed"] * (speed - speed_limit).clamp(min=0.0).square() * step_dt,
     }

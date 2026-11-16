@@ -20,14 +20,20 @@ Phase 1 of [PLAN.md](../PLAN.md) §6: build our own Isaac Lab environment, with 
   - records a chase-cam video
   - writes the results to W&B (`eval/*`) and to HF next to the checkpoint
   - `launch.py --script play` runs it on a fresh box
-- **Caveat:** the policy flies at about 10 m/s and reaches the goal in 1.5 s. That's legal in this sim, which has no
-  aerodynamic drag, but far beyond a real Crazyflie. See §5.
+- **Speed cap (§6).** The first policy flew at about 10 m/s, because the stock Crazyflie has no aerodynamic drag.
+  The task now adds linear drag (5 m/s top speed) and an over-speed penalty above 3 m/s. Retrained, it still reaches
+  the goal in 100% of 1002 episodes, at **3.2 m/s mean and 3.5 m/s peak**, in 4.6 s. This is the default config now.
+- **CTBR ablation (§7), 3 seeds.** Collective thrust + body rates (`Drone-Nav-Goal-CTBR-v0`) learns **2.8× faster**
+  than thrust + torques (98% success by iteration 22 ± 1, against 61 ± 3) and rotates about half as much, with
+  the same success. On a 20% heavier drone, both interfaces collapse on some seeds (to 40–50%) and hold on others,
+  so robustness needs mass randomization in training. Phase 2 will use CTBR.
 
 ## 1. The task
 
 | | |
 |---|---|
 | Robot / action | Isaac Lab's Crazyflie, collective thrust + body torques in [-1, 1] (PLAN.md §4.1 v1, same scaling as `Isaac-Quadcopter-Direct-v0`) |
+| Drag (§6) | linear, −k·v, with k set so the top horizontal speed at full thrust is 5 m/s. The stock model has none. |
 | Spawn | 1–1.5 m up, random yaw, random velocity (σ 0.2 m/s per axis) |
 | Goal | random heading, 10–20 m away horizontally, 0.75–2.5 m altitude. Reached within 0.5 m. |
 | Observation (18) | body-frame linear velocity, body rates, gravity in the body frame, last action, unit direction to the goal (body frame), goal distance clipped to 10 m and scaled to [0, 1], altitude |
@@ -46,6 +52,7 @@ Reward (PLAN.md §4.3 without the obstacle term). Every term is logged separatel
 | ang_rate | −0.01 | per second × ‖ω‖² |
 | upright | −0.5 | per second × (1 − up_z) |
 | time | −0.1 | per second |
+| overspeed (§6) | −2 | per second × (speed − 3 m/s)², above 3 m/s only |
 
 The math lives in plain torch in [`drone_nav/mdp/goal.py`](../source/drone_nav/drone_nav/mdp/goal.py), so it runs in
 CPU tests ([`tests/test_goal_mdp.py`](../tests/test_goal_mdp.py)): goal sampling ranges, the observation, every
@@ -121,16 +128,108 @@ episode starts. The attitude stays level throughout.*
   - **apt:** a new box's own `apt-get` also holds the apt lists lock, so `install_isaac.sh` now waits for it and retries.
   - Details are in [docs/setup.md §7](setup.md).
 
-## 5. Caveats and next steps
+## 5. Next steps
 
-1. **Speed realism.** The policy flies at 10 m/s, with peaks well above, because nothing in the sim stops it: no drag,
-   and thrust-to-weight 1.9 with instant motors. A real Crazyflie tops out at a few m/s. Before Phase 2 obstacles
-   make speed dangerous, add one of these:
-   - linear drag (part of the PLAN.md §5.5 randomization)
-   - a speed penalty above a cap
-   - a lower `thrust_to_weight`
-2. **CTBR ablation** (the last Phase 1 item in PLAN.md): switch to collective thrust + body rates with a PD rate
-   controller and compare against thrust + torques.
-3. **More seeds.** These results are one seed. PLAN.md §7 wants 3 for any claim, so run seeds 1 and 2. Each costs
-   about $0.80.
-4. **Phase 2:** obstacle terrain, a ray-cast lidar ring, and a curriculum.
+1. **Done since: the CTBR ablation (§7).**
+2. **Done since: seeds 1 and 2** for the speed-capped thrust + torque env and for CTBR (§7). The baseline in
+   §2–3 is still one seed.
+3. **Phase 2:** obstacle terrain, a ray-cast lidar ring, and a curriculum.
+4. Later (PLAN.md §5.5): randomize mass, thrust and drag during training. §7 shows why: a 20% heavier drone
+   halves the success of 3 of the 6 policies.
+
+## 6. Speed cap
+
+The baseline in §2–3 flew at 9.9 m/s, because nothing in the sim stopped it: Isaac Lab's Crazyflie has no
+aerodynamic drag, and thrust-to-weight is 1.9 with instant motors. A real Crazyflie tops out at a few m/s, and in
+Phase 2 that speed would leave no time to avoid obstacles. Two changes, both in the env config:
+
+- **Linear drag, −k·v** on the body, every physics substep. k = √(1.9² − 1) × weight / 5 m/s, so at full thrust
+  while holding altitude the top horizontal speed is 5 m/s (climb tops out near 2.8 m/s). `drag_terminal_speed = None`
+  turns it off.
+- **Over-speed penalty**, −2 × (speed − 3 m/s)² per second, above `speed_limit = 3` m/s only. Against the progress
+  reward (+1 per metre), the best cruise speed is 3 + 1/(2 × 2) = 3.25 m/s. A CPU test checks this.
+
+`p1-goal-speedcap-s42` ([W&B](https://forge.coreweave.com/wandb/vedssharma1/isaac-rl/runs/4hw6jj0q),
+[HF](https://huggingface.co/vedssharma/isaac-rl-drone-nav/tree/main/runs/drone_nav_goal/2026-11-13_21-47-27_p1-goal-speedcap-s42)):
+same seed, same 500 iterations. Evaluated the same way as §3, on a Crusoe L40S (its first video render; it works):
+
+| | Baseline (no drag) | Speed-capped |
+|---|---:|---:|
+| Success | 100% (1000) | 100% (1002, 95% CI 99.6–100%) |
+| Crashes / time-outs | 0% | 0% |
+| Mean speed | 9.9 m/s | **3.18 m/s** |
+| Peak speed per episode | not logged | **3.53 m/s** |
+| Time to goal | 1.48 s | 4.64 s |
+| Path efficiency | 0.994 | 0.969 |
+
+The cap holds: the peak speed stays within about 0.3 m/s of the 3.25 m/s optimum, and success is unchanged. Path
+efficiency drops slightly, because slower, dragged flight curves a little more on its way to goals at a different
+heading from the spawn yaw. Training was barely slower: success first passed 98% at iteration 61, against 50 for the
+baseline, with no crashes.
+
+## 7. Action interface: thrust + torques vs CTBR
+
+PLAN.md §4.1 recommends collective thrust + body rates (CTBR) over thrust + body torques for navigation: an inner
+rate loop absorbs attitude dynamics, so the policy learns faster and is less sensitive to model error. This is
+the first ablation in PLAN.md.
+
+**Implementation.** `Drone-Nav-Goal-CTBR-v0` is the same task (speed cap included) with `action_type = "ctbr"`:
+
+- Actions 1–3 are body-rate setpoints, ±(6, 6, 3) rad/s for roll, pitch and yaw. Action 0 is the same collective
+  thrust as before.
+- [`drone_nav/control/rate_controller.py`](../source/drone_nav/drone_nav/control/rate_controller.py) runs a
+  proportional loop every physics substep: τ = I · kp · (ω_cmd − ω), with kp = (25, 25, 15) s⁻¹ (time constants
+  of 40/40/67 ms) and the body's nominal inertia I. Torque is clamped to ±0.01 N·m, the same authority the torque
+  action has.
+- CPU tests ([`tests/test_rate_controller.py`](../tests/test_rate_controller.py)) check the step response at the
+  env's 100 Hz physics rate: it settles within 0.25 s with no overshoot, also with ±20% inertia error.
+
+**Model mismatch for evaluation.** Two env knobs change the true drone while everything the policy and controller
+assume stays nominal:
+
+- `mass_scale`: mass and inertia × s. The thrust command is still scaled for the nominal weight, so this stresses
+  the thrust channel, and the attitude channel a little.
+- `inertia_scale`: inertia only, so it stresses just the attitude channel.
+
+`play.py --eval_name` keeps each condition's results apart (`eval_mass1.2/*` and so on in the W&B summary).
+
+**Results: 3 seeds per interface** (42, 1, 2; 500 iterations each; 1000+ deterministic evaluation episodes per
+condition, run on the training box with `launch.py --eval`). Mean ± standard deviation, then the three seeds:
+
+| | Thrust + torques | CTBR |
+|---|---|---|
+| Training: first iteration with ≥ 98% success | 61 ± 3 (61, 64, 58) | **22 ± 1** (23, 22, 21) |
+| Body-rate penalty per episode (end of training) | −0.152 ± 0.012 | **−0.086 ± 0.012** |
+| Nominal success | 100%, 100%, 100% | 100%, 100%, 99.9% |
+| Nominal path efficiency | 0.959 ± 0.020 | 0.967 ± 0.012 |
+| +50% inertia (seed 42 only) | 100% | 100% |
+| **+20% mass and inertia** | 48.5%, 40.2%, 100% | 99.2%, 100%, 45.9% |
+
+W&B runs: thrust + torques [4hw6jj0q](https://forge.coreweave.com/wandb/vedssharma1/isaac-rl/runs/4hw6jj0q),
+[n0cciowd](https://forge.coreweave.com/wandb/vedssharma1/isaac-rl/runs/n0cciowd),
+[pg0bus1k](https://forge.coreweave.com/wandb/vedssharma1/isaac-rl/runs/pg0bus1k); CTBR
+[gz36u646](https://forge.coreweave.com/wandb/vedssharma1/isaac-rl/runs/gz36u646),
+[r868y7wb](https://forge.coreweave.com/wandb/vedssharma1/isaac-rl/runs/r868y7wb),
+[i40am3am](https://forge.coreweave.com/wandb/vedssharma1/isaac-rl/runs/i40am3am). Each run's evaluations are its
+`eval/*` and `eval_mass1.2/*` summary keys.
+
+What it shows:
+
+1. **CTBR learns 2.8× faster**, on every seed: 98% success by iteration 21–23, against 58–64. The ranges don't
+   overlap.
+2. **CTBR rotates about half as much** for the same task (body-rate penalty −0.086 against −0.152), at the same
+   speed and success.
+3. **Nominal success and path efficiency are the same.** The efficiency difference is within the seed spread.
+4. **Robustness to a heavier drone depends on the seed, not the interface.** Every seed of both interfaces either
+   holds at about 100% or collapses to 40–50%, with all failures hitting the ground. Two of three thrust + torque
+   seeds collapse, and one of three CTBR seeds. With three seeds that's no evidence either way.
+
+   **Correction:** with seed 42 alone I concluded that CTBR is far more robust here (99.2% against 48.5%) and
+   offered a mechanism for it. Seeds 1 and 2 show that was luck: seed 42 happened to land on opposite sides for the
+   two interfaces. Neither policy saw any mass variation in training, so whether it learned to correct a hover
+   error is down to chance.
+5. **+50% inertia alone breaks neither** at this gentle 3 m/s flight (seed 42).
+
+**Decision:** use CTBR from Phase 2 on, for the faster learning and smoother flight; these hold on every seed.
+Robustness has to come from training instead: randomize mass, thrust and drag (PLAN.md §5.5). A bimodal result like
+row 6 is what a policy that never saw the variation looks like.

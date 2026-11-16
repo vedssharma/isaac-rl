@@ -158,3 +158,18 @@ def test_play_args_need_a_task_and_run_headless():
 def test_script_flag_defaults_to_train():
     assert launch.parse_args(["--run-name", "p1-x-s1"])[0].script == "train"
     assert launch.parse_args(["--run-name", "p1-x-s1", "--script", "play"])[0].script == "play"
+
+
+def test_parse_eval_spec():
+    assert launch.parse_eval_spec("eval") == ("eval", [])
+    assert launch.parse_eval_spec("eval_mass1.2:env.mass_scale=1.2") == ("eval_mass1.2", ["env.mass_scale=1.2"])
+    assert launch.parse_eval_spec("x:env.a=1,env.b=2") == ("x", ["env.a=1", "env.b=2"])
+    for bad in ("", ":env.a=1", "bad name", "a/b"):
+        with pytest.raises(SystemExit):
+            launch.parse_eval_spec(bad)
+
+
+def test_eval_flags_parse_and_repeat():
+    args, _ = launch.parse_args(["--run-name", "p1-x-s1", "--eval", "eval", "--eval", "eval_m:env.mass_scale=1.2"])
+    assert args.eval == ["eval", "eval_m:env.mass_scale=1.2"]
+    assert args.eval_episodes == 1000
