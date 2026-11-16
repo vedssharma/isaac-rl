@@ -655,7 +655,9 @@ def main(argv: list[str]) -> int:
         train_args = build_play_args(train_args)
     load_env(args.env_file)
     sha, url = resolve_commit(args.ref, args.allow_dirty)
-    brev("ls")  # signed in?
+    # Signed in? list_instances retries with backoff: several launchers starting at once can get the Brev API's
+    # "resource exhausted" for a raw `brev ls`.
+    brevcli.list_instances()
     launch = Launch(args, train_args, sha, url)
     log(f"run {launch.tag}: {sha[:10]} on {launch.name}{' (reused)' if launch.reuse else ''}")
     log(f"{args.script}.py {' '.join(train_args)}")
