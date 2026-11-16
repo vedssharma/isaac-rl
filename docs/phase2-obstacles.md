@@ -7,8 +7,8 @@ records the parts as they land.
 Status:
 
 - [x] Obstacle terrain generator and its CPU tests (§1)
-- [x] `Drone-Nav-Obstacles-v0` written (§2): spawning in the strips, lidar ring, collision termination, proximity
-  reward. Its math has CPU tests. **Not run in Isaac Sim yet**: the smoke run in §2 is next.
+- [x] `Drone-Nav-Obstacles-v0` (§2): spawning in the strips, lidar ring, collision termination, proximity reward.
+  Passed a 30-iteration smoke run on an L40S (§3).
 - [ ] Curriculum
 - [ ] First training run and held-out evaluation
 - [ ] Ablations
@@ -123,3 +123,37 @@ launch.py --run-name p2-obstacles-smoke-s42 -- --task Drone-Nav-Obstacles-v0 --n
 
 What to look for: start-up without errors and a non-zero `Episode_Termination/collision`.
 `Metrics/min_obstacle_distance` should sit below 5 m on levels with obstacles.
+
+## 3. Smoke run
+
+`p2-obstacles-smoke-s42`, the command above: W&B run
+[sed6nd3l](https://forge.coreweave.com/wandb/vedssharma1/isaac-rl/runs/sed6nd3l), commit `9689689`, 1024 envs on
+levels 0–2, 30 iterations. It ran end to end, and the launcher verified the checkpoint on W&B and HF. On the L40S
+it does about 63k env steps/s (0.4 s per iteration), so 1500 iterations at 4096 envs should take roughly 30–40
+minutes. The 200 terrain tiles generate in 3.4 s.
+
+| | Iter 1 | Iter 10 | Iter 20 | Iter 29 |
+|---|---:|---:|---:|---:|
+| Mean reward | −10.2 | −10.0 | −6.9 | −1.0 |
+| Episode length (steps) | 44 | 124 | 239 | 398 |
+| Mean speed (m/s) | 0.15 | 1.34 | 1.58 | 2.17 |
+| Closest obstacle per episode (m) | 1.84 | 1.56 | 0.93 | 0.44 |
+| Episodes ending flipped / too low | 79% / 3% | 10% / 79% | 9% / 4% | 13% / 4% |
+| Episodes ending in a collision | 7% | 12% | 49% | 35% |
+| Success | 0% | 0% | 0% | 0% |
+
+The policy learns to stay up, then to fly forward, and by iteration 20 it reaches the obstacles, so collisions take
+over as the main way episodes end. No goal is reached in 30 iterations, which is too early to read anything into.
+
+It took four launches to get here, each failing a little later than the one before. Each fix is its own commit:
+
+1. **Hydra overrides must match the default's type.** `max_init_terrain_level` defaulted to `None`, so `=2` was
+   rejected. It's now an int (9), and `eval_terrain_level` is -1 when off.
+2. **Sensors don't see Fabric clones.** The goal task clones envs in Fabric. Isaac Lab sensors count envs from the
+   USD stage, so the lidar sized itself for env_0 only, and the first reset hit a CUDA index-out-of-bounds assert.
+   This task now clones on the USD stage, and the env refuses to start if the lidar and env counts disagree.
+3. **float64 goal offsets.** The strip bounds were numpy float64, so the sampled goals were too, and Isaac Lab's
+   float32 buffers refused them.
+
+A separate bug turned up along the way: `launch.py` printed its whole start script, API keys included, to the
+terminal. Every earlier launch did too. That's fixed and tested, and the keys should be rotated.
