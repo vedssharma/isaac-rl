@@ -1,0 +1,182 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="848.0" height="2350.0" font-family="sans-serif">
+<rect width="848.0" height="2350.0" fill="white"/>
+<text x="8" y="124.0" font-size="12">level 0</text>
+<rect x="90" y="10.0" width="528.0" height="220.0" fill="#f4f1ea" stroke="#999"/>
+<rect x="90" y="10.0" width="44.0" height="220.0" fill="#cfe3ff"/>
+<rect x="574.0" y="10.0" width="44.0" height="220.0" fill="#ffd9cf"/>
+<rect x="90" y="225.60000000000002" width="528.0" height="4.4" fill="#333"/>
+<rect x="90" y="10.0" width="528.0" height="4.4" fill="#333"/>
+<circle cx="290.4" cy="83.5" r="4.5" fill="#2f7d4f"/>
+<text x="628.0" y="124.0" font-size="11">1 obstacles incl. 0 walls, gap 1.93 m</text>
+<text x="8" y="358.0" font-size="12">level 1</text>
+<rect x="90" y="244.0" width="528.0" height="220.0" fill="#f4f1ea" stroke="#999"/>
+<rect x="90" y="244.0" width="44.0" height="220.0" fill="#cfe3ff"/>
+<rect x="574.0" y="244.0" width="44.0" height="220.0" fill="#ffd9cf"/>
+<rect x="90" y="459.6" width="528.0" height="4.4" fill="#333"/>
+<rect x="90" y="244.0" width="528.0" height="4.4" fill="#333"/>
+<circle cx="523.5" cy="407.5" r="9.1" fill="#2f7d4f"/>
+<polygon points="474.6,348.4 498.3,362.5 511.6,340.0 487.9,325.9" fill="#7a5c3e"/>
+<polygon points="244.9,398.1 246.7,410.4 269.7,407.1 268.0,394.8" fill="#7a5c3e"/>
+<text x="628.0" y="358.0" font-size="11">3 obstacles incl. 0 walls, gap 1.79 m</text>
+<text x="8" y="592.0" font-size="12">level 2</text>
+<rect x="90" y="478.0" width="528.0" height="220.0" fill="#f4f1ea" stroke="#999"/>
+<rect x="90" y="478.0" width="44.0" height="220.0" fill="#cfe3ff"/>
+<rect x="574.0" y="478.0" width="44.0" height="220.0" fill="#ffd9cf"/>
+<rect x="90" y="693.6" width="528.0" height="4.4" fill="#333"/>
+<rect x="90" y="478.0" width="528.0" height="4.4" fill="#333"/>
+<polygon points="291.6,607.3 286.4,625.9 297.3,629.0 302.6,610.3" fill="#7a5c3e"/>
+<circle cx="541.5" cy="632.9" r="1.5" fill="#b8860b"/>
+<circle cx="260.0" cy="579.2" r="4.4" fill="#2f7d4f"/>
+<circle cx="423.4" cy="587.3" r="5.8" fill="#2f7d4f"/>
+<polygon points="186.0,585.7 191.2,594.3 216.3,579.3 211.2,570.6" fill="#7a5c3e"/>
+<text x="628.0" y="592.0" font-size="11">5 obstacles incl. 0 walls, gap 1.65 m</text>
+<text x="8" y="826.0" font-size="12">level 3</text>
+<rect x="90" y="712.0" width="528.0" height="220.0" fill="#f4f1ea" stroke="#999"/>
+<rect x="90" y="712.0" width="44.0" height="220.0" fill="#cfe3ff"/>
+<rect x="574.0" y="712.0" width="44.0" height="220.0" fill="#ffd9cf"/>
+<rect x="90" y="927.6" width="528.0" height="4.4" fill="#333"/>
+<rect x="90" y="712.0" width="528.0" height="4.4" fill="#333"/>
+<circle cx="524.7" cy="832.0" r="1.5" fill="#b8860b"/>
+<circle cx="275.4" cy="877.6" r="1.5" fill="#b8860b"/>
+<circle cx="490.1" cy="797.8" r="10.8" fill="#2f7d4f"/>
+<circle cx="383.6" cy="862.0" r="10.8" fill="#2f7d4f"/>
+<polygon points="471.3,849.8 462.2,866.6 487.4,880.2 496.5,863.4" fill="#7a5c3e"/>
+<circle cx="191.4" cy="808.1" r="5.9" fill="#2f7d4f"/>
+<circle cx="283.7" cy="772.1" r="4.1" fill="#2f7d4f"/>
+<text x="628.0" y="826.0" font-size="11">7 obstacles incl. 0 walls, gap 1.51 m</text>
+<text x="8" y="1060.0" font-size="12">level 4</text>
+<rect x="90" y="946.0" width="528.0" height="220.0" fill="#f4f1ea" stroke="#999"/>
+<rect x="90" y="946.0" width="44.0" height="220.0" fill="#cfe3ff"/>
+<rect x="574.0" y="946.0" width="44.0" height="220.0" fill="#ffd9cf"/>
+<rect x="90" y="1161.6" width="528.0" height="4.4" fill="#333"/>
+<rect x="90" y="946.0" width="528.0" height="4.4" fill="#333"/>
+<polygon points="385.0,1037.2 380.6,1037.2 380.6,1161.6 385.0,1161.6" fill="#555c66"/>
+<polygon points="385.0,950.4 380.6,950.4 380.6,998.0 385.0,998.0" fill="#555c66"/>
+<circle cx="446.5" cy="1077.5" r="1.5" fill="#b8860b"/>
+<polygon points="262.4,1065.2 266.2,1076.3 294.1,1066.6 290.3,1055.6" fill="#7a5c3e"/>
+<circle cx="496.3" cy="1042.7" r="8.7" fill="#2f7d4f"/>
+<circle cx="183.5" cy="1060.8" r="6.9" fill="#2f7d4f"/>
+<circle cx="532.3" cy="1119.2" r="6.6" fill="#2f7d4f"/>
+<circle cx="225.4" cy="1086.9" r="3.7" fill="#2f7d4f"/>
+<polygon points="253.0,992.2 268.1,998.1 271.8,988.5 256.7,982.6" fill="#7a5c3e"/>
+<circle cx="311.3" cy="1018.1" r="9.1" fill="#2f7d4f"/>
+<text x="628.0" y="1060.0" font-size="11">9 obstacles incl. 1 wall, gap 1.37 m</text>
+<text x="8" y="1294.0" font-size="12">level 5</text>
+<rect x="90" y="1180.0" width="528.0" height="220.0" fill="#f4f1ea" stroke="#999"/>
+<rect x="90" y="1180.0" width="44.0" height="220.0" fill="#cfe3ff"/>
+<rect x="574.0" y="1180.0" width="44.0" height="220.0" fill="#ffd9cf"/>
+<rect x="90" y="1395.6" width="528.0" height="4.4" fill="#333"/>
+<rect x="90" y="1180.0" width="528.0" height="4.4" fill="#333"/>
+<polygon points="376.3,1300.3 388.2,1302.6 391.5,1285.4 379.6,1283.1" fill="#7a5c3e"/>
+<circle cx="271.2" cy="1268.1" r="3.6" fill="#2f7d4f"/>
+<circle cx="481.2" cy="1230.0" r="5.9" fill="#2f7d4f"/>
+<polygon points="359.8,1340.6 368.6,1347.5 377.0,1336.6 368.2,1329.8" fill="#7a5c3e"/>
+<polygon points="195.2,1288.2 219.4,1299.2 231.6,1272.4 207.4,1261.4" fill="#7a5c3e"/>
+<polygon points="519.0,1325.7 529.3,1327.8 534.8,1301.7 524.5,1299.6" fill="#7a5c3e"/>
+<circle cx="319.4" cy="1336.9" r="10.7" fill="#2f7d4f"/>
+<polygon points="440.0,1337.5 439.9,1350.0 464.8,1350.2 465.0,1337.7" fill="#7a5c3e"/>
+<circle cx="339.9" cy="1229.6" r="4.6" fill="#2f7d4f"/>
+<polygon points="225.6,1345.3 204.6,1352.3 209.7,1368.0 230.8,1361.1" fill="#7a5c3e"/>
+<circle cx="162.1" cy="1233.3" r="1.5" fill="#b8860b"/>
+<text x="628.0" y="1294.0" font-size="11">11 obstacles incl. 0 walls, gap 1.23 m</text>
+<text x="8" y="1528.0" font-size="12">level 6</text>
+<rect x="90" y="1414.0" width="528.0" height="220.0" fill="#f4f1ea" stroke="#999"/>
+<rect x="90" y="1414.0" width="44.0" height="220.0" fill="#cfe3ff"/>
+<rect x="574.0" y="1414.0" width="44.0" height="220.0" fill="#ffd9cf"/>
+<rect x="90" y="1629.6" width="528.0" height="4.4" fill="#333"/>
+<rect x="90" y="1414.0" width="528.0" height="4.4" fill="#333"/>
+<polygon points="547.3,1491.0 542.9,1491.0 542.9,1629.6 547.3,1629.6" fill="#555c66"/>
+<polygon points="547.3,1418.4 542.9,1418.4 542.9,1464.4 547.3,1464.4" fill="#555c66"/>
+<circle cx="292.0" cy="1580.9" r="9.2" fill="#2f7d4f"/>
+<circle cx="228.5" cy="1547.0" r="4.1" fill="#2f7d4f"/>
+<circle cx="272.5" cy="1459.3" r="1.5" fill="#b8860b"/>
+<circle cx="303.4" cy="1485.5" r="8.7" fill="#2f7d4f"/>
+<circle cx="401.7" cy="1474.3" r="6.4" fill="#2f7d4f"/>
+<polygon points="313.9,1530.7 328.5,1538.5 332.7,1530.7 318.1,1522.8" fill="#7a5c3e"/>
+<polygon points="343.6,1495.7 350.6,1510.4 369.2,1501.6 362.2,1486.9" fill="#7a5c3e"/>
+<polygon points="407.1,1550.5 385.3,1557.3 394.8,1588.1 416.6,1581.3" fill="#7a5c3e"/>
+<polygon points="175.2,1500.1 195.9,1510.8 208.9,1485.7 188.1,1475.0" fill="#7a5c3e"/>
+<circle cx="253.7" cy="1510.6" r="4.9" fill="#2f7d4f"/>
+<circle cx="464.4" cy="1557.7" r="9.5" fill="#2f7d4f"/>
+<circle cx="221.4" cy="1600.5" r="4.9" fill="#2f7d4f"/>
+<text x="628.0" y="1528.0" font-size="11">13 obstacles incl. 1 wall, gap 1.09 m</text>
+<text x="8" y="1762.0" font-size="12">level 7</text>
+<rect x="90" y="1648.0" width="528.0" height="220.0" fill="#f4f1ea" stroke="#999"/>
+<rect x="90" y="1648.0" width="44.0" height="220.0" fill="#cfe3ff"/>
+<rect x="574.0" y="1648.0" width="44.0" height="220.0" fill="#ffd9cf"/>
+<rect x="90" y="1863.6" width="528.0" height="4.4" fill="#333"/>
+<rect x="90" y="1648.0" width="528.0" height="4.4" fill="#333"/>
+<polygon points="288.2,1693.1 283.8,1693.1 283.8,1863.6 288.2,1863.6" fill="#555c66"/>
+<polygon points="288.2,1652.4 283.8,1652.4 283.8,1668.0 288.2,1668.0" fill="#555c66"/>
+<polygon points="497.5,1704.9 493.1,1704.9 493.1,1863.6 497.5,1863.6" fill="#555c66"/>
+<polygon points="497.5,1652.4 493.1,1652.4 493.1,1664.5 497.5,1664.5" fill="#555c66"/>
+<polygon points="428.4,1795.0 401.8,1801.9 409.4,1831.1 435.9,1824.3" fill="#7a5c3e"/>
+<circle cx="177.4" cy="1827.7" r="10.7" fill="#2f7d4f"/>
+<polygon points="374.4,1752.2 368.4,1763.2 386.5,1773.0 392.5,1762.1" fill="#7a5c3e"/>
+<polygon points="318.1,1757.6 324.5,1786.7 348.8,1781.4 342.4,1752.3" fill="#7a5c3e"/>
+<circle cx="349.5" cy="1701.2" r="6.9" fill="#2f7d4f"/>
+<circle cx="432.4" cy="1699.5" r="10.1" fill="#2f7d4f"/>
+<polygon points="220.7,1789.6 246.7,1801.3 257.2,1778.0 231.2,1766.3" fill="#7a5c3e"/>
+<polygon points="237.3,1675.9 206.9,1687.5 211.7,1700.3 242.2,1688.7" fill="#7a5c3e"/>
+<polygon points="179.0,1759.6 177.5,1778.9 201.3,1780.9 202.9,1761.5" fill="#7a5c3e"/>
+<circle cx="316.4" cy="1709.0" r="5.9" fill="#2f7d4f"/>
+<circle cx="542.8" cy="1709.8" r="5.5" fill="#2f7d4f"/>
+<circle cx="169.2" cy="1704.8" r="10.3" fill="#2f7d4f"/>
+<polygon points="542.9,1770.2 527.7,1771.8 528.8,1781.6 544.0,1780.0" fill="#7a5c3e"/>
+<polygon points="352.9,1811.7 326.5,1820.8 331.3,1835.0 357.8,1825.9" fill="#7a5c3e"/>
+<text x="628.0" y="1762.0" font-size="11">16 obstacles incl. 2 walls, gap 0.95 m</text>
+<text x="8" y="1996.0" font-size="12">level 8</text>
+<rect x="90" y="1882.0" width="528.0" height="220.0" fill="#f4f1ea" stroke="#999"/>
+<rect x="90" y="1882.0" width="44.0" height="220.0" fill="#cfe3ff"/>
+<rect x="574.0" y="1882.0" width="44.0" height="220.0" fill="#ffd9cf"/>
+<rect x="90" y="2097.6" width="528.0" height="4.4" fill="#333"/>
+<rect x="90" y="1882.0" width="528.0" height="4.4" fill="#333"/>
+<polygon points="518.3,2050.1 542.7,2063.2 549.6,2050.4 525.2,2037.3" fill="#7a5c3e"/>
+<circle cx="167.1" cy="2026.7" r="1.5" fill="#b8860b"/>
+<circle cx="258.1" cy="2027.9" r="4.0" fill="#2f7d4f"/>
+<circle cx="479.3" cy="1918.7" r="8.8" fill="#2f7d4f"/>
+<circle cx="463.8" cy="2056.6" r="4.7" fill="#2f7d4f"/>
+<polygon points="267.3,1950.4 248.3,1957.8 255.4,1976.0 274.4,1968.6" fill="#7a5c3e"/>
+<circle cx="502.0" cy="2035.0" r="1.5" fill="#b8860b"/>
+<circle cx="316.2" cy="1995.1" r="1.5" fill="#b8860b"/>
+<polygon points="503.1,1956.7 498.8,1967.8 523.8,1977.6 528.2,1966.5" fill="#7a5c3e"/>
+<circle cx="251.5" cy="1935.8" r="1.5" fill="#b8860b"/>
+<polygon points="176.1,1966.3 185.8,1975.7 207.4,1953.3 197.7,1943.9" fill="#7a5c3e"/>
+<polygon points="443.4,1960.6 458.1,1986.1 468.3,1980.2 453.6,1954.8" fill="#7a5c3e"/>
+<polygon points="392.9,1994.3 379.1,1997.9 384.0,2017.2 397.9,2013.6" fill="#7a5c3e"/>
+<circle cx="211.3" cy="2054.0" r="1.5" fill="#b8860b"/>
+<circle cx="410.3" cy="1950.6" r="9.5" fill="#2f7d4f"/>
+<circle cx="427.2" cy="2028.3" r="1.5" fill="#b8860b"/>
+<circle cx="242.6" cy="2070.0" r="1.5" fill="#b8860b"/>
+<circle cx="357.3" cy="2059.1" r="8.5" fill="#2f7d4f"/>
+<text x="628.0" y="1996.0" font-size="11">18 obstacles incl. 0 walls, gap 0.81 m</text>
+<text x="8" y="2230.0" font-size="12">level 9</text>
+<rect x="90" y="2116.0" width="528.0" height="220.0" fill="#f4f1ea" stroke="#999"/>
+<rect x="90" y="2116.0" width="44.0" height="220.0" fill="#cfe3ff"/>
+<rect x="574.0" y="2116.0" width="44.0" height="220.0" fill="#ffd9cf"/>
+<rect x="90" y="2331.6" width="528.0" height="4.4" fill="#333"/>
+<rect x="90" y="2116.0" width="528.0" height="4.4" fill="#333"/>
+<polygon points="431.7,2193.6 427.3,2193.6 427.3,2331.6 431.7,2331.6" fill="#555c66"/>
+<polygon points="431.7,2120.4 427.3,2120.4 427.3,2163.6 431.7,2163.6" fill="#555c66"/>
+<polygon points="517.6,2161.3 513.2,2161.3 513.2,2331.6 517.6,2331.6" fill="#555c66"/>
+<polygon points="517.6,2120.4 513.2,2120.4 513.2,2136.8 517.6,2136.8" fill="#555c66"/>
+<polygon points="386.8,2275.8 359.8,2277.2 360.6,2292.6 387.6,2291.2" fill="#7a5c3e"/>
+<circle cx="255.6" cy="2295.1" r="1.5" fill="#b8860b"/>
+<polygon points="353.0,2137.8 332.6,2156.3 340.7,2165.3 361.1,2146.7" fill="#7a5c3e"/>
+<polygon points="333.5,2222.6 342.8,2242.7 360.0,2234.7 350.7,2214.6" fill="#7a5c3e"/>
+<polygon points="225.5,2220.4 216.5,2231.9 225.9,2239.2 234.9,2227.7" fill="#7a5c3e"/>
+<circle cx="187.3" cy="2257.5" r="1.5" fill="#b8860b"/>
+<circle cx="217.1" cy="2157.4" r="1.5" fill="#b8860b"/>
+<circle cx="282.4" cy="2230.5" r="4.8" fill="#2f7d4f"/>
+<circle cx="246.1" cy="2201.2" r="9.3" fill="#2f7d4f"/>
+<polygon points="382.1,2164.1 364.6,2167.0 366.3,2177.1 383.7,2174.2" fill="#7a5c3e"/>
+<circle cx="293.0" cy="2197.7" r="4.3" fill="#2f7d4f"/>
+<polygon points="187.8,2205.0 176.3,2206.4 179.9,2237.6 191.4,2236.3" fill="#7a5c3e"/>
+<circle cx="465.9" cy="2245.5" r="1.5" fill="#b8860b"/>
+<circle cx="291.7" cy="2172.6" r="1.5" fill="#b8860b"/>
+<polygon points="470.8,2273.1 458.5,2296.6 480.2,2308.0 492.5,2284.5" fill="#7a5c3e"/>
+<polygon points="549.3,2196.5 535.3,2197.1 535.7,2206.6 549.7,2206.0" fill="#7a5c3e"/>
+<circle cx="544.2" cy="2164.2" r="1.5" fill="#b8860b"/>
+<polygon points="264.5,2251.6 246.0,2270.1 253.9,2278.0 272.5,2259.6" fill="#7a5c3e"/>
+<text x="628.0" y="2230.0" font-size="11">20 obstacles incl. 2 walls, gap 0.67 m</text>
+</svg>

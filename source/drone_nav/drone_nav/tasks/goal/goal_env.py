@@ -179,6 +179,7 @@ class DroneNavGoalEnv(DirectRLEnv):
     def _setup_scene(self):
         self._robot = Articulation(self.cfg.robot)
         self.scene.articulations["robot"] = self._robot
+        self._add_sensors()
         self.cfg.terrain.num_envs = self.scene.cfg.num_envs
         self.cfg.terrain.env_spacing = self.scene.cfg.env_spacing
         self._terrain = self.cfg.terrain.class_type(self.cfg.terrain)
@@ -187,6 +188,10 @@ class DroneNavGoalEnv(DirectRLEnv):
             self.scene.filter_collisions(global_prim_paths=[self.cfg.terrain.prim_path])
         light_cfg = sim_utils.DomeLightCfg(intensity=2000.0, color=(0.75, 0.75, 0.75))
         light_cfg.func("/World/Light", light_cfg)
+
+    def _add_sensors(self):
+        """Subclasses create their sensors here (before the terrain and the env clones) and add them to
+        self.scene.sensors. This task has none."""
 
     # -- action
 
@@ -258,7 +263,8 @@ class DroneNavGoalEnv(DirectRLEnv):
         return terminated, time_out
 
     def _get_rewards(self) -> torch.Tensor:
-        crashed = torch.stack([self._terms[k] for k in mdp.CRASH_REASONS]).any(dim=0)
+        # Every termination but the goal is a crash (subclasses may add their own, e.g. collisions).
+        crashed = torch.stack([v for k, v in self._terms.items() if k != "goal"]).any(dim=0)
         terms = mdp.compute_reward_terms(
             prev_dist=self._prev_dist,
             dist=self._dist,
@@ -297,15 +303,10 @@ class DroneNavGoalEnv(DirectRLEnv):
         for value in self._episode_sums.values():
             value[env_ids] = 0.0
 
-        # New goal: random heading, 10-20 m away horizontally (PLAN.md §4.4)
-        self._goal_pos_w[env_ids] = origins + mdp.sample_goal_offsets(
-            n, self.cfg.goal_min_dist, self.cfg.goal_max_dist, self.cfg.goal_z_range, device=self.device
-        )
-        # Spawn above the env origin with a random yaw and a small random velocity
+        self._goal_pos_w[env_ids] = origins + self._sample_goal_offsets(n)
+        # Spawn with a random yaw and a small random velocity
         root_state = self._robot.data.default_root_state[env_ids].clone()
-        root_state[:, :3] = origins
-        z_lo, z_hi = self.cfg.spawn_z_range
-        root_state[:, 2] = torch.empty(n, device=self.device).uniform_(z_lo, z_hi)
+        root_state[:, :3] = origins + self._sample_spawn_offsets(n)
         yaw = torch.empty(n, device=self.device).uniform_(-torch.pi, torch.pi)
         zeros = torch.zeros_like(yaw)
         root_state[:, 3:7] = quat_from_euler_xyz(zeros, zeros, yaw)
@@ -325,6 +326,19 @@ class DroneNavGoalEnv(DirectRLEnv):
         self._path_len[env_ids] = 0.0
         self._max_speed[env_ids] = 0.0
 
+    def _sample_goal_offsets(self, n: int) -> torch.Tensor:
+        """(n, 3) goals relative to the env origin (z absolute): a random heading, 10-20 m away horizontally
+        (PLAN.md §4.4)."""
+        return mdp.sample_goal_offsets(
+            n, self.cfg.goal_min_dist, self.cfg.goal_max_dist, self.cfg.goal_z_range, device=self.device
+        )
+
+    def _sample_spawn_offsets(self, n: int) -> torch.Tensor:
+        """(n, 3) spawn points relative to the env origin (z absolute): straight above it."""
+        offsets = torch.zeros(n, 3, device=self.device)
+        offsets[:, 2].uniform_(*self.cfg.spawn_z_range)
+        return offsets
+
     def _log_episodes(self, env_ids: torch.Tensor) -> None:
         """Per-episode values for the episodes ending now. RSL-RL averages every element of each tensor over
         the iteration, so a 0/1 vector logs an exact rate (e.g. Metrics/success_rate)."""
@@ -334,7 +348,7 @@ class DroneNavGoalEnv(DirectRLEnv):
         reached = self._terms["goal"][ended]
         terminated = self.reset_terminated[ended]
         steps = self.episode_length_buf[ended].float()
-        log = {f"Episode_Reward/{k}": self._episode_sums[k][ended] for k in mdp.REWARD_TERMS}
+        log = {f"Episode_Reward/{k}": v[ended] for k, v in self._episode_sums.items()}
         log.update({f"Episode_Termination/{k}": self._terms[k][ended].float() for k in self._terms})
         log["Episode_Termination/time_out"] = (self.reset_time_outs[ended] & ~terminated).float()
         log["Metrics/success_rate"] = reached.float()

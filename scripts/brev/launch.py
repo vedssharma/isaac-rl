@@ -330,7 +330,8 @@ class Launch:
         env["WANDB_RUN_ID"] = self.wandb_run_id  # so we can find and verify the run on W&B afterwards
         exports = "\n".join(f"export {k}={q(v)}" for k, v in env.items())
         clone = f"{REMOTE_ROOT}/isaac-rl"
-        script = f"""set -euo pipefail
+        # Holds the secrets: it goes to ssh's stdin only, and must never be logged.
+        remote_cmd = f"""set -euo pipefail
 {exports}
 command -v git >/dev/null || {{ sudo apt-get -o DPkg::Lock::Timeout=900 update -qq && sudo apt-get -o DPkg::Lock::Timeout=900 install -y -qq git; }}
 if pgrep -f '[s]cripts/(train|play).py' >/dev/null; then echo 'another job is already running here' >&2; exit 4; fi
@@ -345,7 +346,7 @@ RUN_SCRIPT=scripts/{script}.py nohup setsid bash scripts/brev/run_remote.sh \\
     {" ".join(q(a) for a in args)} > {run_dir}/run.log 2>&1 < /dev/null &
 echo "started pid $!"
 """
-        result = ssh(self.name, "bash -s", input=script, timeout=300)
+        result = ssh(self.name, "bash -s", input=remote_cmd, timeout=300)
         if result.returncode != 0:
             raise BrevError(f"starting the job failed ({result.returncode}): {result.stderr[-800:]}")
         if not self.started:
