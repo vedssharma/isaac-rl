@@ -164,6 +164,11 @@ def test_parse_eval_spec():
     assert launch.parse_eval_spec("eval") == ("eval", [])
     assert launch.parse_eval_spec("eval_mass1.2:env.mass_scale=1.2") == ("eval_mass1.2", ["env.mass_scale=1.2"])
     assert launch.parse_eval_spec("x:env.a=1,env.b=2") == ("x", ["env.a=1", "env.b=2"])
+    # Hydra lists keep their commas; play.py flags pass straight through.
+    assert launch.parse_eval_spec("x:--num_envs=1024,env.mix=[0.6,0.3,0.0,0.0],env.b=2") == (
+        "x",
+        ["--num_envs=1024", "env.mix=[0.6,0.3,0.0,0.0]", "env.b=2"],
+    )
     for bad in ("", ":env.a=1", "bad name", "a/b"):
         with pytest.raises(SystemExit):
             launch.parse_eval_spec(bad)

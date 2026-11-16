@@ -119,7 +119,17 @@ def parse_eval_spec(spec: str) -> tuple[str, list[str]]:
     name, _, overrides = spec.partition(":")
     if not name or not all(c.isalnum() or c in "._-" for c in name):
         raise SystemExit(f"--eval {spec!r}: the name must be letters, digits, '.', '_' or '-'")
-    return name, [o for o in overrides.split(",") if o]
+    # Split on commas outside brackets, so Hydra lists (key=[0.6,0.3,0.0,0.0]) stay whole.
+    parts, depth, current = [], 0, ""
+    for c in overrides:
+        depth += (c in "[(") - (c in "])")
+        if c == "," and depth == 0:
+            parts.append(current)
+            current = ""
+        else:
+            current += c
+    parts.append(current)
+    return name, [o for o in parts if o]
 
 
 def build_play_args(play_args: list[str]) -> list[str]:
