@@ -5,3 +5,5 @@ wandb==0.31.0
 huggingface-hub==2.4.0
 python-dotenv==1.2.4
 pytest==8.4.2
+# CPU tests of the obstacle terrain's meshes (Isaac Lab ships its own trimesh on the GPU box).
+trimesh==4.12.2
