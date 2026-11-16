@@ -12,6 +12,7 @@ Status:
 - [x] Curriculum (§4)
 - [x] First training run and held-out evaluation (§5): 88.1% success at level 5 on held-out maps, one seed.
   The exit criterion (≥ 90% success, < 5% collisions) is **not met yet**.
+- [x] Proximity-shaping sweep (§6): no effect on level-5 success or collisions. Shaping isn't the bottleneck.
 - [ ] Ablations
 
 ## 1. Obstacle terrain
@@ -240,3 +241,43 @@ result.
 
 Next: a training-seed level-5 evaluation, a proximity-shaping sweep, then 3 seeds of whatever wins. The PLAN.md
 ablations (no proximity, no curriculum, number of rays) come after that.
+
+## 6. Proximity-shaping sweep
+
+§5 left the policy colliding on about 11% of level-5 episodes, with its closest pass at 0.29 m, so the first
+suspect was the proximity term (−w exp(−clearance / σ), baseline w = 1.0, σ = 0.3 m). Three variants, otherwise
+identical to §5 (seed 42, 4096 envs, 1500 iterations, curriculum on). Each was evaluated at level 5 on held-out maps
+(test seed 1001) and on the training maps (seed 0). The baseline got the training-map evaluation afterwards, from
+its saved checkpoint.
+
+| Run | w | σ | Held-out L5: success / collisions | Training maps L5: success / collisions | Closest pass (held-out) |
+|---|---:|---:|---:|---:|---:|
+| `p2-obstacles-s42` ([x7x2fl6t](https://forge.coreweave.com/wandb/vedssharma1/isaac-rl/runs/x7x2fl6t)) | 1.0 | 0.3 | 88.1% / 11.4% | 86.8% / 12.9% | 0.29 m |
+| `p2-prox-w3-s42` ([s3wi4bgh](https://forge.coreweave.com/wandb/vedssharma1/isaac-rl/runs/s3wi4bgh)) | 3.0 | 0.3 | 81.6% / 17.9% | 86.8% / 12.2% | 0.28 m |
+| `p2-prox-sig06-s42` ([lbzgjbn9](https://forge.coreweave.com/wandb/vedssharma1/isaac-rl/runs/lbzgjbn9)) | 1.0 | 0.6 | 87.8% / 12.1% | 87.1% / 12.6% | 0.30 m |
+| `p2-prox-w3-sig06-s42` ([t9os0rrz](https://forge.coreweave.com/wandb/vedssharma1/isaac-rl/runs/t9os0rrz)) | 3.0 | 0.6 | 87.1% / 10.7% | 87.1% / 12.2% | 0.34 m |
+
+Each cell is 1000 episodes; binomial 95% CIs are about ±2 points. All four runs climbed the curriculum the same
+way (78–84% of envs on level 9 at the end) and fly at the same 3.1–3.2 m/s.
+
+What it shows:
+
+1. **The proximity term doesn't change level-5 performance.** On the training maps all four settings land at
+   86.8–87.1% success and 12.2–12.9% collisions, which is noise. Tripling the weight and doubling the width
+   (about 4× the penalty at 0.2 m clearance) moves the closest pass from 0.29 to 0.34 m and nothing else.
+   Stronger shaping reduces how long the drone flies near obstacles: the w = 3 runs pay less proximity penalty
+   in total than the baseline does at w = 1. But the closest pass and the collision rate barely move.
+2. **New maps aren't the problem either.** Each policy scores about the same on held-out and training maps. The
+   exception, `w3` at 81.6% held-out vs 86.8% on training maps, is best explained by the next point.
+3. **The evaluation set is small.** A level has 20 tiles, so 1000 episodes cover just 20 layouts. Two runs can
+   differ by a few points on one map set simply because one layout is harder, and the binomial CI doesn't
+   include that map-to-map spread. Future evaluations should cover more layouts: all three test seeds, 60 tiles.
+4. Evaluations now run with 1024 envs (`--num_envs=1024` in the `--eval` spec). That took one from 19 minutes to
+   under 2. The baseline's held-out number in §5 used 256 envs.
+
+**Working hypothesis: the drone doesn't see thin poles in time.** Poles are 6–12 cm across and the ring's rays are
+10° apart, so a pole falls between rays until it is within about 0.35–0.7 m, which is 0.1–0.2 s at 3 m/s. Collisions
+that come from sudden surprises would explain why shaping, which acts on obstacles the drone can see, changes so
+little. It's untested. The cheap check is to evaluate an existing checkpoint at level 5 with poles removed from the
+mix. If collisions drop sharply, the fix is sensing (a finer horizontal ring, which is also PLAN.md's ablation (c)),
+not reward.
