@@ -14,6 +14,7 @@ Status:
   The exit criterion (≥ 90% success, < 5% collisions) is **not met yet**.
 - [x] Proximity-shaping sweep (§6): no effect on level-5 success or collisions. Shaping isn't the bottleneck.
 - [x] No-poles diagnostic (§7): poles cause about a third of level-5 collisions, but most come from other obstacles.
+- [x] 5° lidar ring (§8): removes the pole excess, but overall level-5 collisions stay about 11–12%.
 - [ ] Ablations
 
 ## 1. Obstacle terrain
@@ -316,3 +317,46 @@ drop is therefore approximate, but its direction is clear.
    causally, with retraining.
 2. **Recording which obstacle type each collision hits**, to explain the remaining 8.6% instead of guessing.
 3. **Slowing down near obstacles.** The policy cruises at 3.2 m/s through level 5, the same as in open space.
+
+## 8. A finer lidar ring (5°)
+
+`p2-lidar5deg-s42` ([ckba9w5s](https://forge.coreweave.com/wandb/vedssharma1/isaac-rl/runs/ckba9w5s)) is §5 with
+`env.lidar.pattern_cfg.horizontal_res=5.0`: 72 rays per channel instead of 36, so 216 rays and a 234-input
+observation. Training time per iteration was unchanged (0.41 s). Everything else is identical: seed 42, 4096 envs,
+1500 iterations, curriculum on. By the end, 83% of envs were on level 9 with 86% training success and 12%
+collisions there, against 83% / 15% for the 10° baseline.
+
+| Level 5 | 10° ring (§5–7) | 5° ring |
+|---|---:|---:|
+| Training maps: success / collisions | 86.8% / 12.9% | 86.1% / 11.4% |
+| Training maps, no poles: success / collisions | 90.2% / 8.6% | 87.1% / 11.2% |
+| **Collisions caused by poles** (difference) | **4.3 points** | **0.2 points** |
+| Held-out maps (seed 1001): success / collisions | 88.1% / 11.4% | 79.9% / 19.6% |
+| Closest pass / mean speed (training maps) | 0.30 m / 3.22 m/s | 0.30 m / 3.29 m/s |
+| Too high (training maps) | 0.1% | 2.5% |
+
+1. **The finer ring does what it was meant to do for poles.** With 5°, removing poles no longer reduces collisions,
+   so poles stop being the special hazard they were at 10°.
+2. **But the total doesn't fall.** On the training maps with poles, collisions are 11.4% against 12.9%: within noise,
+   and far from the 5% target. Collisions with cylinders, boxes and walls are, if anything, a bit higher than the 10°
+   policy's (11.2% vs 8.6% without poles). With one seed per ring, that could be policy-to-policy variation.
+3. **The held-out number dropped (79.9%), as `w3`'s did in §6.** The training-map numbers are level, so this is most
+   likely the 20-layout held-out set again, not worse generalization. Two of four comparisons have now swung 6–8
+   points on those 20 tiles. The held-out level-5 number isn't a reliable way to compare runs until it covers more
+   layouts.
+4. The 5° policy climbs out the top more often (2.5% of training-map episodes). It never gets over a 5 m obstacle
+   under the 4 m ceiling.
+
+**Where Phase 2 stands.** Two hypotheses, weak proximity shaping and coarse sensing, have each been tested with
+retraining. Neither moved level-5 collisions off about 11–13%. Rather than guess at a third, the next steps should
+measure:
+
+- **Attribute each collision:** obstacle type, approach speed and angle, and how long the obstacle had been visible.
+  That takes some code (the env knows the hit ray, not which obstacle it hit), but it replaces guessing.
+- **Measure the noise:** 3 seeds of the baseline, to know how much two runs differ by chance. Every comparison so far
+  is one seed.
+- **Evaluate on more layouts:** all three test seeds (60 tiles) instead of one.
+
+**Infrastructure fixed along the way:** `launch.py --eval` now passes the training run's `env.`/`agent.`
+overrides to `play.py` (`da6f9ed`). Without that, the 5° checkpoint wouldn't load into the default 10° env. `--eval`
+specs can also hold Hydra lists (`e79e070`).
