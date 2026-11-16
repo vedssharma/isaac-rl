@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import isaaclab.sim as sim_utils
 import torch
+from isaaclab.scene import InteractiveSceneCfg
 from isaaclab.sensors import RayCaster, RayCasterCfg, patterns
 from isaaclab.terrains import TerrainImporterCfg
 from isaaclab.utils import configclass
@@ -41,6 +42,12 @@ class DroneNavObstaclesEnvCfg(DroneNavGoalCTBREnvCfg):
     # Goal-task observation (18) + one value per lidar ray (3 x 36). The env recomputes this from `lidar`, so
     # Hydra overrides of the ring's resolution just work.
     observation_space = GOAL_OBS_DIM + 3 * 36
+
+    # No cloning in Fabric (the goal task uses it): Fabric clones never reach the USD stage, and Isaac Lab sensors
+    # count their envs by matching USD prims, so the lidar would see only env_0 and index out of bounds on reset.
+    scene: InteractiveSceneCfg = InteractiveSceneCfg(
+        num_envs=4096, env_spacing=2.5, replicate_physics=True, clone_in_fabric=False
+    )
 
     terrain = TerrainImporterCfg(
         prim_path="/World/ground",
@@ -102,6 +109,11 @@ class DroneNavObstaclesEnv(DroneNavGoalEnv):
         self._spawn_box, self._goal_box = spawn_and_goal_regions(tile, margin=cfg.strip_margin)
 
         super().__init__(cfg, render_mode, **kwargs)
+        if self._lidar.num_instances != self.num_envs:
+            raise RuntimeError(
+                f"the lidar found {self._lidar.num_instances} drones for {self.num_envs} envs; are the envs cloned in "
+                "Fabric (scene.clone_in_fabric)? Sensors only see clones on the USD stage."
+            )
 
         n, dev = self.num_envs, self.device
         self._max_range = self.cfg.lidar.max_distance
