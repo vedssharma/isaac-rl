@@ -173,3 +173,28 @@ def test_eval_flags_parse_and_repeat():
     args, _ = launch.parse_args(["--run-name", "p1-x-s1", "--eval", "eval", "--eval", "eval_m:env.mass_scale=1.2"])
     assert args.eval == ["eval", "eval_m:env.mass_scale=1.2"]
     assert args.eval_episodes == 1000
+
+
+def test_start_remote_never_prints_secrets(monkeypatch, tmp_path, capsys):
+    """The start script carries the API keys to the box over ssh's stdin; nothing the launcher prints may contain
+    them. (A variable-shadowing bug once logged the whole script, keys included.)"""
+    secrets = {"WANDB_API_KEY": "wandb-secret-123", "HF_TOKEN": "hf-secret-456"}
+    for k in launch.REQUIRED_ENV:
+        monkeypatch.setenv(k, secrets.get(k, f"value-of-{k}"))
+    sent = {}
+
+    def fake_ssh(host, command, *, input=None, timeout=120):
+        sent["input"] = input
+        return launch.subprocess.CompletedProcess(["ssh"], 0, "started pid 4242\n", "")
+
+    monkeypatch.setattr(launch, "REPO_ROOT", tmp_path)
+    monkeypatch.setattr(launch, "ssh", fake_ssh)
+    args, _ = launch.parse_args(["--run-name", "p0-x-s1"])
+    lnch = launch.Launch(args, launch.build_train_args(["--task", "T"], "p0-x-s1"), "sha", "url")
+    lnch.start_remote()
+
+    out = capsys.readouterr().out
+    assert all(v in sent["input"] for v in secrets.values())  # the box still gets them
+    assert not any(v in out for v in secrets.values())
+    assert "train.py: started pid 4242" in out
+    assert "RUN_SCRIPT=scripts/train.py" in sent["input"]
