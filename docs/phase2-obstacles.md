@@ -23,6 +23,8 @@ Status:
   (5.8%) are now the entire gap to the < 5% collision target.
 - [x] Lidar replay of collisions (§11): poles fall between rays 65% of the time and are first seen 0.45 s before
   impact. It also found the ring is world-fixed, not yaw-following (a bug in our assumptions about Isaac Lab).
+- [x] Ring that follows the drone's yaw (§12): no improvement on one seed (84.6% / 14.6% against 89.8% / 10.2%).
+  The world-fixed ring stays.
 - [ ] Ablations
 
 ## 1. Obstacle terrain
@@ -616,7 +618,7 @@ on the 60 held-out level-5 layouts, 2000 episodes; it reproduces §10.1 exactly 
    drops between rays isn't forgotten. The teacher may also use privileged geometry directly (PLAN.md §4.2's "K
    nearest obstacles" option).
 
-## 12. A ring that turns with the drone (not run yet)
+## 12. A ring that turns with the drone
 
 §11 found that the lidar ring is fixed in the world. `env.lidar_follows_yaw=True` (commit `5c9bb93`) makes it
 follow the drone's heading instead. Before every read, the env turns the pattern's ray directions by each drone's
@@ -629,3 +631,38 @@ unchanged (126). The flag is off by default, so every earlier run reproduces, an
 `lidar_follows_yaw=True`, seed 42, evaluated on the 60 held-out level-5 layouts with attribution and the lidar
 replay on. That makes it directly comparable with §10's seed-42 mild slowdown (89.8% / 10.2%, poles 5.4%) and §11's
 replay. If it helps, seeds 1 and 2 next, then poles (5° ring or memory) on top.
+
+### 12.1 Result: no improvement (one seed)
+
+`p2-slow-yawring-s42` ([9k3d559o](https://forge.coreweave.com/wandb/vedssharma1/isaac-rl/runs/9k3d559o)), against
+the same settings with the world-fixed ring
+([mh19cygo](https://forge.coreweave.com/wandb/vedssharma1/isaac-rl/runs/mh19cygo), §10), both seed 42:
+
+| | World-fixed ring | Ring follows yaw |
+|---|---:|---:|
+| Training at iteration 1000: success / collisions (envs on level 9) | 64% / 25% (57%) | 80% / 18% (74%) |
+| End of training: success / collisions (envs on level 9) | 87.3% / 10.3% (84%) | 81.7% / 15.8% (87%) |
+| **Held-out level 5 (60 layouts): success / collisions** | **89.8% / 10.2%** | **84.6% / 14.6%** |
+| … poles / cylinders / boxes / walls | 5.4 / 2.2 / 1.0 / 1.5% | 8.0 / 4.3 / 1.6 / 0.7% |
+| Time-out / flipped | 0 / 0% | 0.45 / 0.15% |
+| Poles: between rays / first returned before impact | 65% / 0.45 s at 1.4 m | 56% / 0.85 s at 2.6 m |
+| Speed near obstacles / time to goal | 2.75 m/s / 8.2 s | 2.70 m/s / 8.6 s |
+
+1. **Turning the ring with the drone didn't help.** It was ahead midway through training, but finished worse at level
+   9 and is 5 points worse at held-out level 5. That's one seed, against a world-fixed setting whose three seeds
+   landed within 0.3 points of each other (§10.2), so it's a real signal against the change, though not proof.
+2. **The frame mismatch was not what limited the policy.** A plausible reason the world-fixed ring works: it gives
+   an absolute reference. The corridor's side walls always show up on the same rays, so the policy can work out its
+   heading from the ring itself, not only from the goal direction.
+3. **Poles get worse even though they're seen earlier.** With the ring following yaw, the hit pole is first returned
+   0.85 s and 2.6 m before impact, about twice the world-fixed figures, yet pole collisions rise from 5.4% to 8.0%.
+   Seeing a pole earlier, as a flickering single ray, doesn't by itself lead to avoiding it. That points more towards
+   memory (keeping a pole in mind between returns) or a privileged nearest-obstacle observation than towards more
+   rays.
+4. Cost: $2.45, not the expected $1.10. The evaluation took 21 minutes instead of 1–5, which suggests the forced
+   ray recompute costs more in `play.py` than it did in training (iteration time there was unchanged at 0.40 s),
+   and the Nebius delete took 21 minutes. Not investigated.
+
+**Decision:** keep `lidar_follows_yaw` off (the default). The world-fixed ring stays the baseline. For poles, the
+next candidates are memory (a GRU policy) or giving the privileged teacher the nearest obstacles' geometry directly
+(PLAN.md §4.2).
