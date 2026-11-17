@@ -19,6 +19,8 @@ Status:
   handled well.
 - [x] Slowing down near obstacles, evaluated on 60 held-out layouts (§10): the mild slowdown reaches 89.8% /
   10.2% (baseline 85.5% / 13.4%), one seed. Poles are now the largest single cause.
+- [x] Three seeds of the mild slowdown vs the baseline (§10.2): 89.7% / 10.0% against 86.4% / 12.6%. Poles
+  (5.8%) are now the entire gap to the < 5% collision target.
 - [ ] Ablations
 
 ## 1. Obstacle terrain
@@ -505,3 +507,51 @@ points) don't include seed-to-seed spread.
   strong variant shows there's a cliff not far beyond this setting.
 - **Look at pole collisions directly:** record the horizontal lidar readings for the 1 s before a pole hit (does
   any ray see the pole before contact?), and a few videos.
+
+### 10.2 Three seeds: the mild slowdown against the baseline
+
+Seeds 1 and 2 of both the §5 baseline and the mild slowdown (`slow_distance=1.0`, `near_speed_limit=1.5`), each
+trained and evaluated exactly like §10.1's seed-42 runs: 60 held-out level-5 layouts, 2000 episodes, attribution on.
+W&B: baseline [jnt5cv07](https://forge.coreweave.com/wandb/vedssharma1/isaac-rl/runs/jnt5cv07) (s1),
+[qvfplndy](https://forge.coreweave.com/wandb/vedssharma1/isaac-rl/runs/qvfplndy) (s2); slowdown
+[up0ct5qd](https://forge.coreweave.com/wandb/vedssharma1/isaac-rl/runs/up0ct5qd) (s1),
+[xn4qaayp](https://forge.coreweave.com/wandb/vedssharma1/isaac-rl/runs/xn4qaayp) (s2).
+
+| Level 5, 60 held-out layouts | Baseline: s42 / s1 / s2 | Mean ± SD | Slowdown: s42 / s1 / s2 | Mean ± SD |
+|---|---|---:|---|---:|
+| **Success** | 85.5 / 85.4 / 88.3 | **86.4 ± 1.7** | 89.8 / 89.9 / 89.4 | **89.7 ± 0.3** |
+| **Collisions** | 13.4 / 12.8 / 11.6 | **12.6 ± 0.9** | 10.2 / 9.6 / 10.4 | **10.0 ± 0.4** |
+| … poles | 5.1 / 5.4 / 6.2 | 5.6 | 5.4 / 6.0 / 6.0 | 5.8 |
+| … cylinders | 4.2 / 3.7 / 1.6 | 3.2 | 2.2 / 1.8 / 3.3 | 2.4 |
+| … walls | 2.0 / 1.7 / 2.1 | 1.9 | 1.5 / 1.1 / 0.3 | 1.0 |
+| … boxes | 2.0 / 1.8 / 1.6 | 1.8 | 1.0 / 0.7 / 0.7 | 0.8 |
+| Too high | 1.2 / 1.6 / 0.0 | 0.9 | 0.05 / 0 / 0 | 0.0 |
+| Speed near obstacles (m/s) | 3.26 / 3.25 / 3.28 | 3.26 | 2.75 / 2.81 / 2.77 | 2.78 |
+| Speed at a collision (m/s) | | 3.01 | | 2.54 |
+| Time to goal (s) | | 7.4 | | 8.2 |
+
+All in % of episodes unless stated. SD is across seeds.
+
+1. **The mild slowdown is a real improvement.** Every slowdown seed beats every baseline seed: +3.3 points of
+   success and −2.6 points of collisions on average. Welch's t is 3.4 (success) and 4.4 (collisions), on about 2–3
+   degrees of freedom. With 3 seeds per arm that's strong but not conclusive; no rank test on 3 against 3 can get
+   below p = 0.1. It is also more consistent: success varies by 0.3 points across seeds, against 1.7 for the
+   baseline. The cost is 0.8 s more to the goal (8.2 s against 7.4 s).
+2. **The gain comes from everything except poles.** Walls drop from 1.9% to 1.0%, boxes from 1.8% to 0.8%, cylinders
+   from 3.2% to 2.4%, and climbing out the top from 0.9% to 0. Poles stay at about 5.7% in all six runs.
+3. **Poles are now the entire gap to the exit criterion.** The slowdown's non-pole collisions add up to 4.2% of
+   episodes, already under the 5% target. Its pole collisions (5.8%) are more than everything else combined. Phase
+   2's next step is poles specifically, not more general shaping.
+4. Success (89.7%) is 0.3 points under the 90% target. Fixing poles would clear it too.
+
+**On poles, what we know:** they cause the same share of collisions with a 10° or 5° ring (§9), at 3 m/s or 2 m/s
+(§10.1), with or without a slowdown. So it isn't ray spacing or reaction time alone. Leads to follow:
+
+- **What does the drone see before a pole hit?** Log the horizontal lidar readings along the bearing of the hit pole
+  for the last second before a collision. If no ray ever returns the pole, it's a sensing gap; if rays see it and
+  the policy flies on, it's the policy.
+- **The ring's vertical coverage:** the lidar is level, and poles are vertical, so this shouldn't matter, but it's
+  worth confirming that the hit happens at the drone's own height.
+- **Collision radius against pole size:** a pole is 3–6 cm in radius. Passing at 0.1 m from its axis counts as a
+  collision, which is only 4–7 cm from its surface. That's a tighter margin than around cylinders, which the
+  policy may not have learned to respect. Not a reason to change the criterion, but worth knowing.
