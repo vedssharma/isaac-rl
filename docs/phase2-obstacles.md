@@ -17,7 +17,8 @@ Status:
 - [x] 5° lidar ring (§8): overall level-5 collisions stay about 10–12%.
 - [x] Collision attribution (§9): walls and poles cause about two thirds of collisions. Cylinders and boxes are
   handled well.
-- [ ] Slowing down near obstacles, evaluated on 60 held-out layouts (§10): built, not run yet.
+- [x] Slowing down near obstacles, evaluated on 60 held-out layouts (§10): the mild slowdown reaches 89.8% /
+  10.2% (baseline 85.5% / 13.4%), one seed. Poles are now the largest single cause.
 - [ ] Ablations
 
 ## 1. Obstacle terrain
@@ -414,7 +415,7 @@ seeds.
 
 §9 found that collisions happen at full cruise speed with about 0.4 s of warning, mostly on walls and poles. This
 section adds a speed limit that depends on clearance, so the policy can still cruise in open space, and an
-evaluation set large enough to compare runs. Both are built and CPU-tested; nothing has been trained with them yet.
+evaluation set large enough to compare runs. Results are in §10.1.
 
 **Clearance-based speed limit.** The over-speed term (Phase 1: −2 × (speed − limit)² per second above the limit)
 now takes a per-env limit. With `env.slow_distance` > 0, the limit falls linearly from `speed_limit` (3 m/s) once
@@ -452,3 +453,55 @@ on the same 60 layouts, with `launch.py --script play`, so every run is compared
 held-out collisions (target < 5%), success (≥ 90%), the wall and pole rows of the attribution, time to goal and
 `Metrics/speed_near_obstacles`. If a variant clearly wins, the next step is 3 seeds of it and of the baseline
 (PLAN.md ablation (d)).
+
+### 10.1 Results
+
+Commit `cd702c4`, 3 training runs plus the §5 baseline checkpoint. Each was evaluated on the same 60 held-out level-5
+layouts (2000 episodes, 1024 envs, collision attribution on). One seed each, so the binomial CIs (about ±1.5
+points) don't include seed-to-seed spread.
+
+| Level 5, 60 held-out layouts | Baseline (§5) | Mild slowdown | Strong slowdown | 2 m/s everywhere |
+|---|---:|---:|---:|---:|
+| Run | [x7x2fl6t](https://forge.coreweave.com/wandb/vedssharma1/isaac-rl/runs/x7x2fl6t) | [mh19cygo](https://forge.coreweave.com/wandb/vedssharma1/isaac-rl/runs/mh19cygo) | [i7i3du3y](https://forge.coreweave.com/wandb/vedssharma1/isaac-rl/runs/i7i3du3y) | [zdta1m8u](https://forge.coreweave.com/wandb/vedssharma1/isaac-rl/runs/zdta1m8u) |
+| Overrides | | `slow_distance=1.0`, `near_speed_limit=1.5` | `slow_distance=1.5`, `near_speed_limit=1.0` | `speed_limit=2.0` |
+| **Success** | 85.5% (83.8–86.9) | **89.8%** (88.4–91.1) | 17.1% | 85.7% (84.1–87.1) |
+| **Collisions** | 13.4% (12.0–15.0) | **10.2%** (8.9–11.6) | 17.3% | 14.2% (12.7–15.8) |
+| … with poles | 5.1% | 5.4% | 4.5% | 6.5% |
+| … with cylinders | 4.2% | 2.2% | 5.0% | 3.6% |
+| … with walls | 2.0% | 1.5% | 3.1% | 3.1% |
+| … with boxes | 2.0% | 1.0% | 4.4% | 1.0% |
+| Other endings | 1.2% too high | 0.05% too high | 47% flipped, 14% time-out, 5% too low | 0.2% too low |
+| Speed near obstacles | 3.26 m/s | 2.75 m/s | 2.06 m/s | 2.22 m/s |
+| Speed / warning time at a collision | 3.08 m/s / 0.45 s | 2.54 m/s / 0.53 s | 1.94 m/s / 1.16 s | 2.21 m/s / 0.70 s |
+| Time to goal | 7.3 s | 8.2 s | 9.0 s | 10.6 s |
+| End of training: envs on level 9 | 84% | 84% | 0% | 71% |
+
+1. **The bigger evaluation set is harder than the old one.** The baseline scores 85.5% / 13.4% on 60 layouts,
+   against 88.1% / 11.4% on the original 20. Cylinders cause many more collisions here (4.2% of episodes against
+   1.8% on the training maps in §9), so the 20-tile sets were light on hard cylinder layouts. Every earlier
+   held-out number should be read against 85.5%, not 88.1%.
+2. **The mild slowdown is the best policy so far:** 89.8% success, 0.2 points short of the exit criterion, with
+   collisions down 3.2 points from the baseline (CIs don't overlap). The drop comes mostly from cylinders (2.0
+   points), then boxes (1.0) and walls (0.5); pole collisions rose slightly (0.3). The cost is 0.9 s more to the goal (8.2 s against 7.3 s). Collisions are still double the 5%
+   target.
+3. **Slowing down everywhere doesn't help.** At 2 m/s the drone hits obstacles more slowly and with more warning
+   (0.70 s), yet collisions are 14.2%, the same as the baseline, and it takes 3.3 s longer. What helps is going
+   fast in the open and slowing near clutter, not speed itself. With one seed per run, though, part of the
+   difference between these two could be seed noise.
+4. **A slowdown that's too steep breaks training.** Braking from 3 to 1 m/s over 1.5 m flipped the drone in 32%
+   of training episodes by iteration 700. Its curriculum stayed around levels 2–4 to the end, and at level 5 it flips in 47% of
+   episodes. Hard braking near obstacles, at CTBR's body-rate limits, tips it over.
+5. **Poles are now the largest single cause**, at 4.5–6.5% of episodes in every run, whatever the speed. Even at
+   2 m/s with 0.7 s of warning, the pole rate doesn't fall. A slowdown can't fix what the drone doesn't see:
+   a 6 cm pole falls between 10° rays until it is about 0.35 m away, and the warning time measures the closest
+   reading of anything, not of the pole. §9 found the 5° ring didn't help poles either, so the next pole
+   experiment should look at what the drone sees before a pole hit, not just the ring's resolution.
+
+**Next:**
+
+- **3 seeds of the mild slowdown and of the baseline** on these 60 layouts. A 3.2-point gain on one seed each is
+  promising, not settled.
+- **Tune around the mild slowdown**, for example `near_speed_limit=2.0` (gentler) and `slow_distance=0.7`. The
+  strong variant shows there's a cliff not far beyond this setting.
+- **Look at pole collisions directly:** record the horizontal lidar readings for the 1 s before a pole hit (does
+  any ray see the pole before contact?), and a few videos.
