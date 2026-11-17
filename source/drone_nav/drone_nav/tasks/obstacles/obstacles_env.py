@@ -18,6 +18,7 @@ obstacle_field.TEST_SEEDS (Hydra: env.terrain.terrain_generator.seed=1001).
 from __future__ import annotations
 
 import isaaclab.sim as sim_utils
+import numpy as np
 import torch
 from isaaclab.scene import InteractiveSceneCfg
 from isaaclab.sensors import RayCaster, RayCasterCfg, patterns
@@ -27,6 +28,7 @@ from isaaclab.utils import configclass
 from drone_nav.mdp import obstacles as obs_mdp
 from drone_nav.mdp.curriculum import SuccessCurriculum, level_fractions
 from drone_nav.tasks.goal.goal_env import DroneNavGoalCTBREnvCfg, DroneNavGoalEnv, RewardWeightsCfg
+from drone_nav.terrain import obstacle_field as of
 from drone_nav.terrain.obstacle_field import ObstacleFieldParams, spawn_and_goal_regions
 from drone_nav.terrain.obstacle_field_cfg import OBSTACLE_FIELD_GENERATOR_CFG
 
@@ -101,6 +103,13 @@ class DroneNavObstaclesEnvCfg(DroneNavGoalCTBREnvCfg):
     curriculum_up_rate: float = 0.8
     curriculum_down_rate: float = 0.4
 
+    # Evaluation diagnostic: attribute each collision to the obstacle hit (its kind, from the tile's layout), with the
+    # drone's speed, closing speed and warning time, logged as Collision/* and Exposure/*. Costs a CPU lookup per
+    # collision, so it's off for training.
+    attribute_collisions: bool = False
+    # Warning time = how long the closest horizontal lidar reading had been within this distance before a collision.
+    warning_distance: float = 1.0
+
     rewards: ObstacleRewardWeightsCfg = ObstacleRewardWeightsCfg()
 
 
@@ -119,6 +128,7 @@ class DroneNavObstaclesEnv(DroneNavGoalEnv):
         tile = ObstacleFieldParams.from_cfg(generator.sub_terrains["obstacles"])
         tile.size = tuple(generator.size)
         self._spawn_box, self._goal_box = spawn_and_goal_regions(tile, margin=cfg.strip_margin)
+        self._tile_params = tile
 
         super().__init__(cfg, render_mode, **kwargs)
         if self._lidar.num_instances != self.num_envs:
@@ -156,6 +166,54 @@ class DroneNavObstaclesEnv(DroneNavGoalEnv):
         # The level each env's current episode is played on (the terrain's level can change at the episode's end).
         self._episode_level = self._terrain.terrain_levels.clone()
 
+        # How long the closest obstacle has been within warning_distance (collision attribution's warning time).
+        self._near_time = torch.zeros(n, device=dev)
+        self._tile_layouts = None
+        if self.cfg.attribute_collisions:
+            self._setup_attribution()
+
+    def _setup_attribution(self):
+        """Look up every tile's layout (the terrain function recorded them as Isaac Lab built the tiles), and keep
+        per-env buffers describing the collision that ended the current episode, if any."""
+        n, dev = self.num_envs, self.device
+        rows, cols = self._terrain.terrain_origins.shape[:2]
+        self._tile_layouts = of.tile_layouts(of.GENERATED_LAYOUTS, rows, cols)
+        self._terrain_origins_np = self._terrain.terrain_origins.cpu().numpy()
+        self._origin_in_tile = of.terrain_origin(self._tile_params)[:2]
+        counts = torch.zeros(rows, cols, len(of.KINDS))
+        for (r, c), layout in self._tile_layouts.items():
+            kc = of.kind_counts(layout)
+            counts[r, c] = torch.tensor([kc[k] for k in of.KINDS], dtype=torch.float)
+        self._kind_counts = counts.to(dev)  # obstacles of each kind per tile, to normalize collision rates
+        self._hit_kind = torch.full((n,), -1, dtype=torch.long, device=dev)  # index into of.ATTRIBUTION_KINDS
+        self._hit_dist = torch.zeros(n, device=dev)  # drone centre to the attributed footprint (sanity check)
+        self._hit_speed = torch.zeros(n, device=dev)  # horizontal speed at the collision
+        self._hit_closing = torch.zeros(n, device=dev)  # speed towards the obstacle hit
+        self._hit_warning = torch.zeros(n, device=dev)  # how long something had been within warning_distance
+
+    def _attribute(self, ids: torch.Tensor) -> None:
+        """Fill the collision buffers for envs `ids`, which just collided."""
+        pos = self._robot.data.root_pos_w[ids, :2].cpu().numpy()
+        vel = self._robot.data.root_lin_vel_w[ids, :2].cpu().numpy()
+        rows = self._episode_level[ids].cpu().numpy()
+        cols = self._terrain.terrain_types[ids].cpu().numpy()
+        kinds, dists, closing = [], [], []
+        for k in range(len(ids)):
+            r, c = int(rows[k]), int(cols[k])
+            p_tile = pos[k] - self._terrain_origins_np[r, c, :2] + self._origin_in_tile
+            kind, dist, nearest = of.nearest_obstacle(self._tile_layouts[(r, c)], p_tile)
+            to = nearest - p_tile
+            norm = float(np.linalg.norm(to))
+            kinds.append(of.ATTRIBUTION_KINDS.index(kind))
+            dists.append(dist)
+            closing.append(float(vel[k] @ to) / norm if norm > 1e-9 else float(np.linalg.norm(vel[k])))
+        dev = self.device
+        self._hit_kind[ids] = torch.tensor(kinds, dtype=torch.long, device=dev)
+        self._hit_dist[ids] = torch.tensor(dists, dtype=torch.float, device=dev)
+        self._hit_speed[ids] = torch.linalg.norm(self._robot.data.root_lin_vel_w[ids, :2], dim=1)
+        self._hit_closing[ids] = torch.tensor(closing, dtype=torch.float, device=dev)
+        self._hit_warning[ids] = self._near_time[ids]
+
     def _add_sensors(self):
         self._lidar = RayCaster(self.cfg.lidar)
         self.scene.sensors["lidar"] = self._lidar
@@ -180,6 +238,10 @@ class DroneNavObstaclesEnv(DroneNavGoalEnv):
         )
         self._min_dist_episode = torch.minimum(self._min_dist_episode, self._min_dist)
         hit = obs_mdp.collided(self._min_dist, self.cfg.collision_radius)
+        near = self._min_dist < self.cfg.warning_distance
+        self._near_time = torch.where(near, self._near_time + self.step_dt, torch.zeros_like(self._near_time))
+        if self._tile_layouts is not None and hit.any():
+            self._attribute(hit.nonzero(as_tuple=False).squeeze(-1))
         # A collision is a crash: it ends the episode, takes the crash penalty and overrides reaching the goal.
         self._terms["collision"] = hit
         self._terms["goal"] = self._terms["goal"] & ~hit
@@ -210,6 +272,9 @@ class DroneNavObstaclesEnv(DroneNavGoalEnv):
         super()._reset_idx(env_ids)  # logs the ended episodes (at _episode_level), then respawns
         self._episode_level[env_ids] = self._terrain.terrain_levels[env_ids]
         self._min_dist_episode[env_ids] = self._max_range
+        self._near_time[env_ids] = 0.0
+        if self._tile_layouts is not None:
+            self._hit_kind[env_ids] = -1
 
     def _sample_goal_offsets(self, n: int) -> torch.Tensor:
         """Anywhere in the tile's goal strip, at the goal task's altitudes."""
@@ -231,3 +296,17 @@ class DroneNavObstaclesEnv(DroneNavGoalEnv):
         # Difficulty histogram over all envs (PLAN.md §5.3: "your best progress chart").
         for level, fraction in enumerate(level_fractions(self._terrain.terrain_levels, self._num_levels)):
             log[f"Curriculum/level_{level}"] = fraction
+        if self._tile_layouts is not None:
+            # Per ended episode: 1 if it ended in a collision with this kind (the mean is that kind's rate), and how
+            # many of each kind its tile had. Speeds and times only over the episodes that collided.
+            kind = self._hit_kind[ended]
+            for j, name in enumerate(of.ATTRIBUTION_KINDS):
+                log[f"Collision/{name}"] = (kind == j).float()
+            rows, cols = self._episode_level[ended], self._terrain.terrain_types[ended]
+            for j, name in enumerate(of.KINDS):
+                log[f"Exposure/{name}"] = self._kind_counts[rows, cols, j]
+            collided = kind >= 0
+            log["Collision/speed"] = self._hit_speed[ended][collided]
+            log["Collision/closing_speed"] = self._hit_closing[ended][collided]
+            log["Collision/warning_time_s"] = self._hit_warning[ended][collided]
+            log["Collision/attribution_distance"] = self._hit_dist[ended][collided]
