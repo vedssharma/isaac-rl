@@ -164,6 +164,11 @@ def test_parse_eval_spec():
     assert launch.parse_eval_spec("eval") == ("eval", [])
     assert launch.parse_eval_spec("eval_mass1.2:env.mass_scale=1.2") == ("eval_mass1.2", ["env.mass_scale=1.2"])
     assert launch.parse_eval_spec("x:env.a=1,env.b=2") == ("x", ["env.a=1", "env.b=2"])
+    # Hydra lists keep their commas; play.py flags pass straight through.
+    assert launch.parse_eval_spec("x:--num_envs=1024,env.mix=[0.6,0.3,0.0,0.0],env.b=2") == (
+        "x",
+        ["--num_envs=1024", "env.mix=[0.6,0.3,0.0,0.0]", "env.b=2"],
+    )
     for bad in ("", ":env.a=1", "bad name", "a/b"):
         with pytest.raises(SystemExit):
             launch.parse_eval_spec(bad)
@@ -216,3 +221,28 @@ def test_preflight_survives_a_brief_brev_api_outage(monkeypatch, capsys):
     monkeypatch.setattr(launch, "resolve_commit", lambda ref, dirty: ("0" * 40, "url"))
     assert launch.main(["--run-name", "p0-x-s1", "--dry-run", "--", "--task", "T"]) == 0
     assert len(calls) == 3
+
+
+def test_evals_inherit_the_training_overrides():
+    """An eval must run the env the policy was trained in: a 5-degree lidar run's checkpoint (234 inputs) failed to
+    load in the default 10-degree env (126). The eval's own overrides win where they share a key."""
+    train = launch.build_train_args(
+        ["--task", "T", "--num_envs", "4096", "env.lidar.pattern_cfg.horizontal_res=5.0", "env.eval_terrain_level=2",
+         "agent.seed=7"],
+        "p2-x-s1",
+    )  # fmt: skip
+    got = launch.eval_play_overrides(train, ["--num_envs=1024", "env.eval_terrain_level=5"])
+    assert got == [
+        "env.lidar.pattern_cfg.horizontal_res=5.0",
+        "agent.seed=7",
+        "--num_envs=1024",
+        "env.eval_terrain_level=5",
+    ]
+    assert launch.eval_play_overrides(["--task", "T", "--run_name", "a=b"], []) == []  # flag values aren't overrides
+
+
+def test_hydra_key():
+    assert launch.hydra_key("env.a.b=1") == "env.a.b"
+    assert launch.hydra_key("+agent.x=[1,2]") == "agent.x"
+    for not_override in ("--num_envs=1024", "T", "a=b", "env.a"):
+        assert launch.hydra_key(not_override) is None

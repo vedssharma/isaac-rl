@@ -242,3 +242,70 @@ def test_spawn_and_goal_regions_are_plain_floats():
     for region in of.spawn_and_goal_regions(P):
         for lo_hi in region:
             assert all(type(v) is float for v in lo_hi)
+
+
+# -- collision attribution
+
+
+def build_like_isaac_lab(num_rows, num_cols, seed=0):
+    """Replay Isaac Lab v2.3.2's curriculum generator loop: column by column, rows in order, one uniform draw per
+    tile from default_rng(seed), difficulty (row + u) / num_rows. Returns {(row, col): difficulty}."""
+    rng = np.random.default_rng(seed)
+    cfg = SimpleNamespace(**{f.name: getattr(P, f.name) for f in fields(P)}, seed=seed)
+    built = {}
+    for col in range(num_cols):
+        for row in range(num_rows):
+            d = (row + rng.uniform()) / num_rows
+            of.obstacle_field_terrain(d, cfg)
+            built[(row, col)] = d
+    return built
+
+
+def test_tile_layouts_recovers_each_tiles_layout():
+    of.GENERATED_LAYOUTS.clear()
+    built = build_like_isaac_lab(num_rows=10, num_cols=3)
+    tiles = of.tile_layouts(of.GENERATED_LAYOUTS, 10, 3)
+    assert set(tiles) == set(built)
+    for key, difficulty in built.items():
+        assert tiles[key].difficulty == difficulty
+    # A layout built earlier in the process (another env) is ignored: only the last rows x cols count.
+    of.GENERATED_LAYOUTS.insert(0, of.GENERATED_LAYOUTS[-1])
+    assert of.tile_layouts(of.GENERATED_LAYOUTS, 10, 3)[(0, 0)].difficulty == built[(0, 0)]
+    with pytest.raises(ValueError):
+        of.tile_layouts(of.GENERATED_LAYOUTS[-5:], 10, 3)  # too few
+
+
+def test_nearest_obstacle():
+    y0, y1 = P.inner_y
+    cyl = of.Obstacle("cylinder", (10.0, 5.0), radius=0.3)
+    box = of.Obstacle("box", (14.0, 5.0), half_extents=(0.5, 0.5), yaw=math.pi / 4)  # corners 0.707 m out on the axes
+    lay = of.Layout([cyl, box], 0.5, 1.0, 2, 0, P)
+
+    kind, d, q = of.nearest_obstacle(lay, (10.0, 5.5))
+    assert kind == "cylinder" and d == pytest.approx(0.2) and np.allclose(q, [10.0, 5.3])
+    kind, d, q = of.nearest_obstacle(lay, (12.0, 5.0))
+    assert kind == "box" and d == pytest.approx(2.0 - math.sqrt(0.5)) and np.allclose(q, [14.0 - math.sqrt(0.5), 5.0])
+    assert of.nearest_obstacle(lay, (14.0, 5.1))[:2] == ("box", 0.0)  # inside
+    kind, d, q = of.nearest_obstacle(lay, (3.0, y0 + 0.07))
+    assert kind == "side_wall" and d == pytest.approx(0.07) and np.allclose(q, [3.0, y0])
+    assert of.nearest_obstacle(lay, (3.0, y1 - 0.2))[0] == "side_wall"
+
+
+def test_nearest_obstacle_agrees_with_the_occupancy_grid():
+    """Cells the grid marks as within r of something must have nearest_obstacle distance <= r, and vice versa."""
+    lay = layout(2, 0.95)
+    r = 0.25
+    blocked, xs, ys = of.occupancy_grid(lay, r)
+    rng = np.random.default_rng(0)
+    for i, j in zip(rng.integers(0, len(xs), 400), rng.integers(0, len(ys), 400)):
+        d = of.nearest_obstacle(lay, (xs[i], ys[j]))[1]
+        if abs(d - r) < 1e-6:
+            continue  # exactly on the threshold: the grid uses < for side walls and <= for obstacles
+        assert (d <= r) == bool(blocked[i, j]), (xs[i], ys[j], d)
+
+
+def test_kind_counts_count_a_wall_once():
+    lay = layout(2, 0.95)
+    counts = of.kind_counts(lay)
+    assert counts["wall"] == lay.walls
+    assert sum(counts.values()) == lay.placed

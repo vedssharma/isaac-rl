@@ -425,4 +425,81 @@ def obstacle_field_terrain(difficulty: float, cfg) -> tuple[list, np.ndarray]:
     Isaac Lab's generator has set `cfg.seed`."""
     p = ObstacleFieldParams.from_cfg(cfg)
     layout = generate_layout(p, difficulty, layout_rng(getattr(cfg, "seed", None), difficulty))
+    GENERATED_LAYOUTS.append(layout)
     return layout_meshes(layout), terrain_origin(p)
+
+
+# -- collision attribution (evaluation): which obstacle a drone hit
+
+# Every layout obstacle_field_terrain has built in this process, in order. Isaac Lab builds each tile once while
+# the env starts, so the env can recover which layout each tile has (tile_layouts).
+GENERATED_LAYOUTS: list[Layout] = []
+# What a collision can be attributed to: an obstacle kind, or the corridor's side walls.
+ATTRIBUTION_KINDS = (*KINDS, "side_wall")
+
+
+def tile_layouts(layouts: list[Layout], num_rows: int, num_cols: int) -> dict[tuple[int, int], Layout]:
+    """{(row, col): layout} for the last num_rows x num_cols layouts built.
+
+    Isaac Lab v2.3.2's curriculum generator (TerrainGenerator._generate_curriculum_terrains) visits tiles column by
+    column, rows in order within a column, and gives row r a difficulty in [r, r + 1) / num_rows. So a layout's row
+    follows from its difficulty, and its column from how many layouts that row already had.
+    """
+    recent = layouts[-num_rows * num_cols :]
+    if len(recent) != num_rows * num_cols:
+        raise ValueError(f"expected {num_rows * num_cols} generated layouts, found {len(recent)}")
+    out: dict[tuple[int, int], Layout] = {}
+    next_col = [0] * num_rows
+    for layout in recent:
+        row = min(int(layout.difficulty * num_rows), num_rows - 1)
+        col = next_col[row]
+        if col >= num_cols:
+            raise ValueError(f"row {row} got more than {num_cols} layouts: not the generator order assumed here")
+        next_col[row] += 1
+        out[(row, col)] = layout
+    return out
+
+
+def _closest_on_segments(p: np.ndarray, a: np.ndarray, b: np.ndarray) -> tuple[float, np.ndarray]:
+    """Distance from point p to the nearest of segments a[i]-b[i], and that nearest point."""
+    ab = b - a
+    t = np.clip(((p - a) * ab).sum(-1) / np.maximum((ab * ab).sum(-1), 1e-12), 0.0, 1.0)
+    pts = a + t[:, None] * ab
+    d = np.linalg.norm(pts - p, axis=-1)
+    i = int(d.argmin())
+    return float(d[i]), pts[i]
+
+
+def nearest_obstacle(layout: Layout, point) -> tuple[str, float, np.ndarray]:
+    """(kind, distance, nearest point) of the footprint closest to `point` (x, y in the tile frame). The side walls
+    count as kind "side_wall" (the tile's long edges when there are none). Distance 0 means inside the footprint."""
+    p = np.asarray(point, dtype=np.float64)[:2]
+    y0, y1 = layout.params.inner_y
+    if p[1] - y0 <= y1 - p[1]:
+        best = ("side_wall", float(p[1] - y0), np.array([p[0], y0]))
+    else:
+        best = ("side_wall", float(y1 - p[1]), np.array([p[0], y1]))
+    for o in layout.obstacles:
+        if o.is_round:
+            c = np.asarray(o.center, dtype=np.float64)
+            v = p - c
+            n = float(np.linalg.norm(v))
+            d, q = (max(n - o.radius, 0.0), c + v / n * o.radius) if n > 1e-12 else (0.0, p)
+        else:
+            poly = o.polygon()
+            if _inside_convex(p[None], poly)[0]:
+                d, q = 0.0, p
+            else:
+                d, q = _closest_on_segments(p, poly, np.roll(poly, -1, axis=0))
+        if d < best[1]:
+            best = (o.kind, d, q)
+    return best
+
+
+def kind_counts(layout: Layout) -> dict[str, int]:
+    """How many obstacles of each kind a layout has (a wall counts once, not per segment)."""
+    counts = {k: 0 for k in KINDS}
+    for o in layout.obstacles:
+        counts[o.kind] += 1
+    counts["wall"] //= 2
+    return counts

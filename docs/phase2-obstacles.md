@@ -13,6 +13,10 @@ Status:
 - [x] First training run and held-out evaluation (§5): 88.1% success at level 5 on held-out maps, one seed.
   The exit criterion (≥ 90% success, < 5% collisions) is **not met yet**.
 - [x] Proximity-shaping sweep (§6): no effect on level-5 success or collisions. Shaping isn't the bottleneck.
+- [x] No-poles diagnostic (§7): poles cause about a third of level-5 collisions, but most come from other obstacles.
+- [x] 5° lidar ring (§8): overall level-5 collisions stay about 10–12%.
+- [x] Collision attribution (§9): walls and poles cause about two thirds of collisions. Cylinders and boxes are
+  handled well.
 - [ ] Ablations
 
 ## 1. Obstacle terrain
@@ -281,3 +285,126 @@ that come from sudden surprises would explain why shaping, which acts on obstacl
 little. It's untested. The cheap check is to evaluate an existing checkpoint at level 5 with poles removed from the
 mix. If collisions drop sharply, the fix is sensing (a finer horizontal ring, which is also PLAN.md's ablation (c)),
 not reward.
+
+## 7. Diagnostic: level 5 without poles
+
+To test §6's hypothesis, I evaluated the §5 checkpoint
+([x7x2fl6t](https://forge.coreweave.com/wandb/vedssharma1/isaac-rl/runs/x7x2fl6t)) at level 5 on the training maps
+with poles removed from the mix (pole weight 0 in `mix_easy` and `mix_hard`, so other obstacles fill their slots).
+The comparison is the same checkpoint on the same seed with poles (§6). No retraining.
+
+| Level 5, training maps | With poles | Without poles |
+|---|---:|---:|
+| Success | 86.8% (95% CI 84.6–88.8%) | **90.2%** (95% CI 88.2–91.9%) |
+| Collisions | 12.9% (95% CI 11.0–15.1%) | **8.6%** (95% CI 7.0–10.5%) |
+| Too high | 0.1% | 1.0% |
+| Closest pass | 0.30 m | 0.30 m |
+| Mean speed / path efficiency | 3.22 m/s / 0.94 | 3.23 m/s / 0.92 |
+
+Removing poles also changes the random draws, so the layouts differ, and a level has only 20 tiles. The size of the
+drop is therefore approximate, but its direction is clear.
+
+- **Poles cause more than their share of collisions.** They are about 16% of level-5 obstacles, but removing them
+  cuts collisions by about a third (12.9% → 8.6%), even though other obstacles fill the freed slots. Per obstacle, a
+  pole is roughly 2.5× as likely as anything else to cause a collision. That fits the 10° ring seeing them late.
+- **But poles aren't the main cause.** With none at all, 8.6% of episodes still end in a collision, well above the
+  5% target. Most collisions come from cylinders, boxes or walls.
+- Too-high crashes rise to 1%. The mix without poles has relatively more walls (about 10% instead of 8%), and a
+  few episodes try to climb over one; it never pays off, since walls are 5 m and the ceiling is 4 m.
+
+**Next candidates:**
+
+1. **A finer lidar ring**, which is PLAN.md ablation (c). A 5° ring (72 × 3 = 216 rays) would see a 6 cm pole from
+   about 0.7 m instead of 0.35 m, and box corners and wall ends earlier. This tests the sensing hypothesis
+   causally, with retraining.
+2. **Recording which obstacle type each collision hits**, to explain the remaining 8.6% instead of guessing.
+3. **Slowing down near obstacles.** The policy cruises at 3.2 m/s through level 5, the same as in open space.
+
+## 8. A finer lidar ring (5°)
+
+`p2-lidar5deg-s42` ([ckba9w5s](https://forge.coreweave.com/wandb/vedssharma1/isaac-rl/runs/ckba9w5s)) is §5 with
+`env.lidar.pattern_cfg.horizontal_res=5.0`: 72 rays per channel instead of 36, so 216 rays and a 234-input
+observation. Training time per iteration was unchanged (0.41 s). Everything else is identical: seed 42, 4096 envs,
+1500 iterations, curriculum on. By the end, 83% of envs were on level 9 with 86% training success and 12%
+collisions there, against 83% / 15% for the 10° baseline.
+
+| Level 5 | 10° ring (§5–7) | 5° ring |
+|---|---:|---:|
+| Training maps: success / collisions | 86.8% / 12.9% | 86.1% / 11.4% |
+| Training maps, no poles: success / collisions | 90.2% / 8.6% | 87.1% / 11.2% |
+| **Collisions caused by poles** (difference) | **4.3 points** | **0.2 points** |
+| Held-out maps (seed 1001): success / collisions | 88.1% / 11.4% | 79.9% / 19.6% |
+| Closest pass / mean speed (training maps) | 0.30 m / 3.22 m/s | 0.30 m / 3.29 m/s |
+| Too high (training maps) | 0.1% | 2.5% |
+
+1. ~~**The finer ring does what it was meant to do for poles.**~~ **Corrected by §9:** measured directly, the
+   5° policy hits poles exactly as often as the 10° one (4.1% of episodes each). The no-poles comparison in this
+   table changes the layouts along with the mix, and on 20 tiles that change swamped the effect. It can't isolate
+   one obstacle type; §9's attribution can.
+2. **But the total doesn't fall.** On the training maps with poles, collisions are 11.4% against 12.9%: within noise,
+   and far from the 5% target. Collisions with cylinders, boxes and walls are, if anything, a bit higher than the 10°
+   policy's (11.2% vs 8.6% without poles). With one seed per ring, that could be policy-to-policy variation.
+3. **The held-out number dropped (79.9%), as `w3`'s did in §6.** The training-map numbers are level, so this is most
+   likely the 20-layout held-out set again, not worse generalization. Two of four comparisons have now swung 6–8
+   points on those 20 tiles. The held-out level-5 number isn't a reliable way to compare runs until it covers more
+   layouts.
+4. The 5° policy climbs out the top more often (2.5% of training-map episodes). It never gets over a 5 m obstacle
+   under the 4 m ceiling.
+
+**Where Phase 2 stands.** Two hypotheses, weak proximity shaping and coarse sensing, have each been tested with
+retraining. Neither moved level-5 collisions off about 11–13%. Rather than guess at a third, the next steps should
+measure:
+
+- **Attribute each collision:** obstacle type, approach speed and angle, and how long the obstacle had been visible.
+  That takes some code (the env knows the hit ray, not which obstacle it hit), but it replaces guessing.
+- **Measure the noise:** 3 seeds of the baseline, to know how much two runs differ by chance. Every comparison so far
+  is one seed.
+- **Evaluate on more layouts:** all three test seeds (60 tiles) instead of one.
+
+**Infrastructure fixed along the way:** `launch.py --eval` now passes the training run's `env.`/`agent.`
+overrides to `play.py` (`da6f9ed`). Without that, the 5° checkpoint wouldn't load into the default 10° env. `--eval`
+specs can also hold Hydra lists (`e79e070`).
+
+## 9. Collision attribution
+
+To stop guessing, the env can now attribute each collision to the obstacle it hit (`env.attribute_collisions=True`,
+evaluation only). The terrain function records every layout it builds. `tile_layouts` maps them back to (row,
+column) using Isaac Lab's generation order, and at a collision `nearest_obstacle` finds the footprint the drone is
+closest to, counting the corridor's side walls. Each episode logs which kind it hit and how many of each kind its tile
+had (exposure). Collisions also log the drone's speed, its closing speed on the obstacle, and its warning time (how
+long the closest horizontal lidar reading had been within 1 m). Sanity check: at the moment of collision, drones are
+on average 0.080 m from the attributed footprint, inside the 0.1 m collision radius, so the tile lookup is right.
+
+Both checkpoints, level 5, training maps, 2000 episodes each (233 and 201 collisions):
+
+| Hit | 10° ring: % of episodes | 5° ring: % of episodes | Per tile | 10°: rate per obstacle | 5°: rate per obstacle |
+|---|---:|---:|---:|---:|---:|
+| wall (with a door) | 4.2% | 2.6% | 0.92 | 4.6% | 2.8% |
+| pole | 4.1% | 4.1% | 1.6 | 2.6% | 2.7% |
+| cylinder | 1.8% | 1.8% | 5.3 | 0.34% | 0.34% |
+| box | 1.1% | 1.3% | 3.6 | 0.30% | 0.36% |
+| corridor side wall | 0.3% | 0.1% | | | |
+| **total** | **11.6%** | **10.0%** | | | |
+
+At the collision: speed 3.0 / 3.2 m/s, closing speed 1.7 / 1.5 m/s, warning time 0.41 / 0.39 s (10° / 5°).
+
+1. **Walls and poles cause about two thirds of collisions** (8.3 of 11.6 points at 10°, 6.7 of 10.0 at 5°), though
+   they're only about 2.5 of a level-5 tile's 11.5 obstacles. Per obstacle, each is 8–15× as dangerous as a cylinder
+   or box.
+2. **Cylinders and boxes, most of the clutter, are handled well**, at about 0.3% per obstacle with either ring.
+3. **The 5° ring doesn't help with poles** (4.1% both), which corrects §8. The only difference is walls (4.2% →
+   2.6%), on one seed per ring.
+4. **Collisions happen at full cruise speed**, 3.0–3.2 m/s, with only about 0.4 s between something coming within
+   1 m and the crash. The policy doesn't slow down for the hard cases.
+
+What walls and poles have in common: both are thin in the direction the drone meets them. A pole is 6–12 cm across.
+A wall's door edges are its 0.2 m-thick ends, which the drone has to pass within about half a metre of to get
+through a 1.2 m door. Both also need a late, sharp correction at 3 m/s. Two things to try next:
+
+- **Slow down near obstacles.** Lower `speed_limit` (for example 2 m/s), or tie the speed penalty to the closest
+  lidar reading. That buys reaction time for exactly these cases, at some cost in time to goal.
+- **Look at wall collisions directly.** A video of a few would show whether they happen at the door edges or
+  because the drone misses the door. A finer attribution could also split segment ends from faces.
+
+The held-out set is also still 20 layouts per evaluation (§6); any decision-making run should cover all three test
+seeds.
