@@ -118,3 +118,41 @@ def test_lidar_horizontal_angles_match_the_pattern():
     assert len(mdp.lidar_horizontal_angles(HFOV, 5.0)) == 72
     b = mdp.lidar_horizontal_angles((-90.0, 90.0), 5.0)
     assert len(b) == 37 and b[-1] == 90.0  # a partial fan keeps both ends
+
+
+def quat_from_yaw(yaw):
+    """(w, x, y, z) for a pure heading."""
+    return torch.stack([torch.cos(yaw / 2), torch.zeros_like(yaw), torch.zeros_like(yaw), torch.sin(yaw / 2)], -1)
+
+
+def test_yaw_from_quat():
+    yaws = torch.tensor([0.0, 0.5, -2.0, 3.0])
+    torch.testing.assert_close(mdp.yaw_from_quat(quat_from_yaw(yaws)), yaws)
+    # A pitched and rolled drone keeps its heading: compose yaw 0.7 with a 20-degree pitch about the body y axis.
+    pitch = math.radians(20.0)
+    q_pitch = torch.tensor([[math.cos(pitch / 2), 0.0, math.sin(pitch / 2), 0.0]])
+    q_yaw = quat_from_yaw(torch.tensor([0.7]))
+    w1, x1, y1, z1 = q_yaw[0]
+    w2, x2, y2, z2 = q_pitch[0]
+    q = torch.tensor([[w1 * w2 - x1 * x2 - y1 * y2 - z1 * z2, w1 * x2 + x1 * w2 + y1 * z2 - z1 * y2,
+                       w1 * y2 - x1 * z2 + y1 * w2 + z1 * x2, w1 * z2 + x1 * y2 - y1 * x2 + z1 * w2]])  # fmt: skip
+    torch.testing.assert_close(mdp.yaw_from_quat(q), torch.tensor([0.7]))
+
+
+def test_yaw_rotate_turns_each_ray_by_the_heading():
+    """With the ring following yaw, the ray at pattern angle theta on a drone with heading psi points at world
+    bearing theta + psi, and the channel's elevation (z) is unchanged."""
+    theta = torch.deg2rad(mdp.lidar_horizontal_angles(HFOV, HRES))
+    elev = math.radians(15.0)
+    dirs = torch.stack(
+        [math.cos(elev) * torch.cos(theta), math.cos(elev) * torch.sin(theta), torch.full_like(theta, math.sin(elev))],
+        dim=-1,
+    )
+    yaw = torch.tensor([0.0, 0.8, -2.5])
+    out = mdp.yaw_rotate(dirs, yaw)
+    assert out.shape == (3, len(theta), 3)
+    bearing = torch.atan2(out[..., 1], out[..., 0])
+    expected = torch.atan2(torch.sin(theta[None] + yaw[:, None]), torch.cos(theta[None] + yaw[:, None]))
+    torch.testing.assert_close(bearing, expected)
+    torch.testing.assert_close(out[..., 2], dirs[None, :, 2].expand(3, -1))
+    torch.testing.assert_close(out.norm(dim=-1), torch.ones(3, len(theta)))

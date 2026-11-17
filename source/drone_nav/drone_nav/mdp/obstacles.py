@@ -107,3 +107,18 @@ def sample_in_box(
     lows = torch.tensor([float(box[0][0]), float(box[1][0]), float(z_range[0])], dtype=torch.float32, device=device)
     highs = torch.tensor([float(box[0][1]), float(box[1][1]), float(z_range[1])], dtype=torch.float32, device=device)
     return lows + torch.rand(n, 3, device=device, generator=generator) * (highs - lows)
+
+
+def yaw_from_quat(quat_wxyz: torch.Tensor) -> torch.Tensor:
+    """(n,) heading (radians) of (n, 4) quaternions in Isaac Lab's (w, x, y, z) order."""
+    w, x, y, z = quat_wxyz.unbind(-1)
+    return torch.atan2(2.0 * (w * z + x * y), 1.0 - 2.0 * (y * y + z * z))
+
+
+def yaw_rotate(directions: torch.Tensor, yaw: torch.Tensor) -> torch.Tensor:
+    """(n, rays, 3): the pattern's ray directions (rays, 3) turned about the vertical axis by each env's heading
+    (n,). Used to make the lidar ring follow the drone's yaw (Isaac Lab's "yaw" alignment turns only the rays'
+    start points, not their directions)."""
+    c, s = torch.cos(yaw)[:, None], torch.sin(yaw)[:, None]
+    x, y, z = directions[None, :, 0], directions[None, :, 1], directions[None, :, 2]
+    return torch.stack([c * x - s * y, s * x + c * y, z.expand_as(c * x)], dim=-1)

@@ -92,6 +92,11 @@ class DroneNavObstaclesEnvCfg(DroneNavGoalCTBREnvCfg):
         max_distance=5.0,
         debug_vis=False,
     )
+    # Make the ring follow the drone's heading (body-yaw frame) instead of staying world-fixed: before every read,
+    # the pattern's ray directions are turned by each drone's yaw. The lidar observation then shares the body frame
+    # of the goal and velocities. Off by default, so runs before 2026-11-17 reproduce (docs/phase2-obstacles.md §12).
+    lidar_follows_yaw: bool = False
+
     # Collision when an obstacle is this close to the drone's centre, horizontally. Crazyflie 2.x prop tips are
     # about 0.07 m out; 0.1 m is also the disk the terrain generator guarantees a path for.
     collision_radius = 0.1
@@ -140,6 +145,8 @@ class DroneNavObstaclesEnv(DroneNavGoalEnv):
         n_rays = pattern.channels * obs_mdp.lidar_num_horizontal(pattern.horizontal_fov_range, pattern.horizontal_res)
         cfg.observation_space = GOAL_OBS_DIM + n_rays
 
+        if cfg.lidar_follows_yaw and cfg.lidar.ray_alignment != "yaw":
+            raise ValueError("lidar_follows_yaw turns the ray directions itself; it needs lidar.ray_alignment='yaw'")
         if cfg.slow_distance > 0.0 and not 0.0 < cfg.near_speed_limit <= cfg.speed_limit:
             raise ValueError(
                 f"near_speed_limit must be in (0, speed_limit={cfg.speed_limit}], not {cfg.near_speed_limit}"
@@ -160,6 +167,8 @@ class DroneNavObstaclesEnv(DroneNavGoalEnv):
             )
 
         n, dev = self.num_envs, self.device
+        # The pattern's ray directions (identical for every env at start-up), turned per env when the ring follows yaw.
+        self._lidar_base_dirs = self._lidar.ray_directions[0].clone()
         self._max_range = self.cfg.lidar.max_distance
         self._lidar_dist = torch.full((n, n_rays), self._max_range, device=dev)
         self._min_dist = torch.full((n,), self._max_range, device=dev)  # closest obstacle, horizontally, this step
@@ -224,7 +233,7 @@ class DroneNavObstaclesEnv(DroneNavGoalEnv):
         self._ray_offsets = np.deg2rad(angles.numpy().astype(np.float64))
         # Which way the ring's ray 0 points: with the drone's yaw only for "base" alignment; for "yaw" and "world",
         # Isaac Lab doesn't rotate ray directions at all (see the lidar cfg), so the ring is world-fixed.
-        self._ring_follows_yaw = self.cfg.lidar.ray_alignment == "base"
+        self._ring_follows_yaw = self.cfg.lidar_follows_yaw or self.cfg.lidar.ray_alignment == "base"
         self._trace_read = torch.zeros(n, k, len(self._ray_offsets), device=dev)
         self._trace_pos = torch.zeros(n, k, 2, device=dev)
         self._trace_yaw = torch.zeros(n, k, device=dev)
@@ -237,7 +246,7 @@ class DroneNavObstaclesEnv(DroneNavGoalEnv):
         n = self.num_envs
         horizontal = self._lidar_dist.view(n, self._lidar_channels, -1)[:, self._horizontal_channel]
         q = self._robot.data.root_quat_w  # (w, x, y, z)
-        yaw = torch.atan2(2.0 * (q[:, 0] * q[:, 3] + q[:, 1] * q[:, 2]), 1.0 - 2.0 * (q[:, 2] ** 2 + q[:, 3] ** 2))
+        yaw = obs_mdp.yaw_from_quat(q)
         self._trace_read[:, self._trace_ptr] = horizontal
         self._trace_pos[:, self._trace_ptr] = self._robot.data.root_pos_w[:, :2]
         self._trace_yaw[:, self._trace_ptr] = yaw
@@ -296,6 +305,12 @@ class DroneNavObstaclesEnv(DroneNavGoalEnv):
         self.scene.sensors["lidar"] = self._lidar
 
     def _read_lidar(self) -> torch.Tensor:
+        if self.cfg.lidar_follows_yaw:
+            # Turn every env's rays by its current heading, then recompute: the sensor would otherwise return the
+            # hits it cast (lazily) with the previous directions.
+            yaw = obs_mdp.yaw_from_quat(self._robot.data.root_quat_w)
+            self._lidar.ray_directions[:] = obs_mdp.yaw_rotate(self._lidar_base_dirs, yaw)
+            self._lidar.update(dt=0.0, force_recompute=True)
         data = self._lidar.data
         return obs_mdp.ray_distances(data.ray_hits_w, data.pos_w, self._max_range)
 
