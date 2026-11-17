@@ -17,6 +17,12 @@ Status:
 - [x] 5° lidar ring (§8): overall level-5 collisions stay about 10–12%.
 - [x] Collision attribution (§9): walls and poles cause about two thirds of collisions. Cylinders and boxes are
   handled well.
+- [x] Slowing down near obstacles, evaluated on 60 held-out layouts (§10): the mild slowdown reaches 89.8% /
+  10.2% (baseline 85.5% / 13.4%), one seed. Poles are now the largest single cause.
+- [x] Three seeds of the mild slowdown vs the baseline (§10.2): 89.7% / 10.0% against 86.4% / 12.6%. Poles
+  (5.8%) are now the entire gap to the < 5% collision target.
+- [x] Lidar replay of collisions (§11): poles fall between rays 65% of the time and are first seen 0.45 s before
+  impact. It also found the ring is world-fixed, not yaw-following (a bug in our assumptions about Isaac Lab).
 - [ ] Ablations
 
 ## 1. Obstacle terrain
@@ -90,9 +96,11 @@ was the Phase 1 decision). The obstacle-specific math is plain torch in
   one tile. It spawns anywhere in the start strip and its goal is anywhere in the goal strip, both at least 0.5 m
   from the strip edges and the side walls. Yaw is random, as in Phase 1.
 - **Lidar ring** (PLAN.md §4.2, the teacher's privileged sensing). An Isaac Lab `RayCaster` on the drone's body
-  casts 3 channels (−15°, 0°, +15°) × 36 rays (every 10°) against the terrain mesh, out to 5 m. It turns with
-  the drone's yaw but stays level with the horizon, so pitching forward to accelerate doesn't point it at the
-  ground. Each ray's distance / 5 m is appended to the Phase 1 observation: 18 + 108 = 126 inputs.
+  casts 3 channels (−15°, 0°, +15°) × 36 rays (every 10°) against the terrain mesh, out to 5 m. It stays level
+  with the horizon, so pitching forward to accelerate doesn't point it at the ground. ~~It turns with the drone's
+  yaw.~~ **Correction (§11):** it doesn't. Isaac Lab's `ray_alignment="yaw"` turns only the rays' start points, so
+  the ring is fixed in the world: the lidar part of the observation is world-frame, while the goal and velocities
+  are body-frame. Each ray's distance / 5 m is appended to the Phase 1 observation: 18 + 108 = 126 inputs.
 - **Collision** ends the episode as a crash, with the usual crash penalty, when the horizontal channel sees an
   obstacle within 0.1 m of the drone's centre. Obstacles are vertical and taller than the flight ceiling, so the
   horizontal channel always sees what the drone could hit. A test checks that 10° spacing can't miss one:
@@ -408,3 +416,202 @@ through a 1.2 m door. Both also need a late, sharp correction at 3 m/s. Two thin
 
 The held-out set is also still 20 layouts per evaluation (§6); any decision-making run should cover all three test
 seeds.
+
+## 10. Slowing down near obstacles, and a 60-layout evaluation
+
+§9 found that collisions happen at full cruise speed with about 0.4 s of warning, mostly on walls and poles. This
+section adds a speed limit that depends on clearance, so the policy can still cruise in open space, and an
+evaluation set large enough to compare runs. Results are in §10.1.
+
+**Clearance-based speed limit.** The over-speed term (Phase 1: −2 × (speed − limit)² per second above the limit)
+now takes a per-env limit. With `env.slow_distance` > 0, the limit falls linearly from `speed_limit` (3 m/s) once
+the closest horizontal lidar hit is `slow_distance` outside the 0.1 m collision radius, down to
+`env.near_speed_limit` at contact ([`clearance_speed_limit`](../source/drone_nav/drone_nav/mdp/obstacles.py)).
+Since progress pays 1 per metre, the best speed is always about 0.25 m/s above whichever limit applies (the Phase 1
+derivation), so the policy should settle at roughly limit + 0.25 near obstacles too. `slow_distance=0.0` (the
+default) turns it off, which keeps every earlier run reproducible. Like the proximity term, it uses the closest hit
+in any direction, so passing a wall side-on also slows the drone; the cost is some time to goal.
+
+A new metric, `Metrics/speed_near_obstacles`, is the mean horizontal speed while something is within
+`warning_distance` (1 m), over episodes that came that close. It shows directly whether the policy slows down. For
+the §5 baseline it should read close to the 3.0–3.2 m/s collision speeds from §9.
+
+**60 held-out layouts in one evaluation.** Isaac Lab builds curriculum tiles column by column from the generator
+seed, so `env.terrain.terrain_generator.num_cols=60` with seed 1001 gives level 5 sixty tiles: the 20 in today's
+held-out set, plus 40 new ones. That's one Isaac Sim start instead of three seeds to pool, and
+`attribute_collisions` works with any column count. 2000 episodes over 60 tiles is about 33 per tile. Spec:
+
+```
+--eval-episodes 2000 --eval eval_heldout60_l5:env.eval_terrain_level=5,env.terrain.terrain_generator.seed=1001,\
+env.terrain.terrain_generator.num_cols=60,env.attribute_collisions=True,--num_envs=1024
+```
+
+**Planned runs** (seed 42, 4096 envs, 1500 iterations, curriculum on, each with the evaluation above):
+
+| Run | Overrides | Question |
+|---|---|---|
+| `p2-slow-n15-d10-s42` | `env.slow_distance=1.0 env.near_speed_limit=1.5` | Does slowing near obstacles cut collisions? |
+| `p2-slow-n10-d15-s42` | `env.slow_distance=1.5 env.near_speed_limit=1.0` | A stronger slowdown, starting further out |
+| `p2-speed2-s42` | `env.speed_limit=2.0` | Is a slower drone everywhere just as good? |
+
+Plus the §5 baseline checkpoint ([x7x2fl6t](https://forge.coreweave.com/wandb/vedssharma1/isaac-rl/runs/x7x2fl6t))
+on the same 60 layouts, with `launch.py --script play`, so every run is compared on the same maps. What to read:
+held-out collisions (target < 5%), success (≥ 90%), the wall and pole rows of the attribution, time to goal and
+`Metrics/speed_near_obstacles`. If a variant clearly wins, the next step is 3 seeds of it and of the baseline
+(PLAN.md ablation (d)).
+
+### 10.1 Results
+
+Commit `cd702c4`, 3 training runs plus the §5 baseline checkpoint. Each was evaluated on the same 60 held-out level-5
+layouts (2000 episodes, 1024 envs, collision attribution on). One seed each, so the binomial CIs (about ±1.5
+points) don't include seed-to-seed spread.
+
+| Level 5, 60 held-out layouts | Baseline (§5) | Mild slowdown | Strong slowdown | 2 m/s everywhere |
+|---|---:|---:|---:|---:|
+| Run | [x7x2fl6t](https://forge.coreweave.com/wandb/vedssharma1/isaac-rl/runs/x7x2fl6t) | [mh19cygo](https://forge.coreweave.com/wandb/vedssharma1/isaac-rl/runs/mh19cygo) | [i7i3du3y](https://forge.coreweave.com/wandb/vedssharma1/isaac-rl/runs/i7i3du3y) | [zdta1m8u](https://forge.coreweave.com/wandb/vedssharma1/isaac-rl/runs/zdta1m8u) |
+| Overrides | | `slow_distance=1.0`, `near_speed_limit=1.5` | `slow_distance=1.5`, `near_speed_limit=1.0` | `speed_limit=2.0` |
+| **Success** | 85.5% (83.8–86.9) | **89.8%** (88.4–91.1) | 17.1% | 85.7% (84.1–87.1) |
+| **Collisions** | 13.4% (12.0–15.0) | **10.2%** (8.9–11.6) | 17.3% | 14.2% (12.7–15.8) |
+| … with poles | 5.1% | 5.4% | 4.5% | 6.5% |
+| … with cylinders | 4.2% | 2.2% | 5.0% | 3.6% |
+| … with walls | 2.0% | 1.5% | 3.1% | 3.1% |
+| … with boxes | 2.0% | 1.0% | 4.4% | 1.0% |
+| Other endings | 1.2% too high | 0.05% too high | 47% flipped, 14% time-out, 5% too low | 0.2% too low |
+| Speed near obstacles | 3.26 m/s | 2.75 m/s | 2.06 m/s | 2.22 m/s |
+| Speed / warning time at a collision | 3.08 m/s / 0.45 s | 2.54 m/s / 0.53 s | 1.94 m/s / 1.16 s | 2.21 m/s / 0.70 s |
+| Time to goal | 7.3 s | 8.2 s | 9.0 s | 10.6 s |
+| End of training: envs on level 9 | 84% | 84% | 0% | 71% |
+
+1. **The bigger evaluation set is harder than the old one.** The baseline scores 85.5% / 13.4% on 60 layouts,
+   against 88.1% / 11.4% on the original 20. Cylinders cause many more collisions here (4.2% of episodes against
+   1.8% on the training maps in §9), so the 20-tile sets were light on hard cylinder layouts. Every earlier
+   held-out number should be read against 85.5%, not 88.1%.
+2. **The mild slowdown is the best policy so far:** 89.8% success, 0.2 points short of the exit criterion, with
+   collisions down 3.2 points from the baseline (CIs don't overlap). The drop comes mostly from cylinders (2.0
+   points), then boxes (1.0) and walls (0.5); pole collisions rose slightly (0.3). The cost is 0.9 s more to the goal (8.2 s against 7.3 s). Collisions are still double the 5%
+   target.
+3. **Slowing down everywhere doesn't help.** At 2 m/s the drone hits obstacles more slowly and with more warning
+   (0.70 s), yet collisions are 14.2%, the same as the baseline, and it takes 3.3 s longer. What helps is going
+   fast in the open and slowing near clutter, not speed itself. With one seed per run, though, part of the
+   difference between these two could be seed noise.
+4. **A slowdown that's too steep breaks training.** Braking from 3 to 1 m/s over 1.5 m flipped the drone in 32%
+   of training episodes by iteration 700. Its curriculum stayed around levels 2–4 to the end, and at level 5 it flips in 47% of
+   episodes. Hard braking near obstacles, at CTBR's body-rate limits, tips it over.
+5. **Poles are now the largest single cause**, at 4.5–6.5% of episodes in every run, whatever the speed. Even at
+   2 m/s with 0.7 s of warning, the pole rate doesn't fall. A slowdown can't fix what the drone doesn't see:
+   a 6 cm pole falls between 10° rays until it is about 0.35 m away, and the warning time measures the closest
+   reading of anything, not of the pole. §9 found the 5° ring didn't help poles either, so the next pole
+   experiment should look at what the drone sees before a pole hit, not just the ring's resolution.
+
+**Next:**
+
+- **3 seeds of the mild slowdown and of the baseline** on these 60 layouts. A 3.2-point gain on one seed each is
+  promising, not settled.
+- **Tune around the mild slowdown**, for example `near_speed_limit=2.0` (gentler) and `slow_distance=0.7`. The
+  strong variant shows there's a cliff not far beyond this setting.
+- **Look at pole collisions directly:** record the horizontal lidar readings for the 1 s before a pole hit (does
+  any ray see the pole before contact?), and a few videos.
+
+### 10.2 Three seeds: the mild slowdown against the baseline
+
+Seeds 1 and 2 of both the §5 baseline and the mild slowdown (`slow_distance=1.0`, `near_speed_limit=1.5`), each
+trained and evaluated exactly like §10.1's seed-42 runs: 60 held-out level-5 layouts, 2000 episodes, attribution on.
+W&B: baseline [jnt5cv07](https://forge.coreweave.com/wandb/vedssharma1/isaac-rl/runs/jnt5cv07) (s1),
+[qvfplndy](https://forge.coreweave.com/wandb/vedssharma1/isaac-rl/runs/qvfplndy) (s2); slowdown
+[up0ct5qd](https://forge.coreweave.com/wandb/vedssharma1/isaac-rl/runs/up0ct5qd) (s1),
+[xn4qaayp](https://forge.coreweave.com/wandb/vedssharma1/isaac-rl/runs/xn4qaayp) (s2).
+
+| Level 5, 60 held-out layouts | Baseline: s42 / s1 / s2 | Mean ± SD | Slowdown: s42 / s1 / s2 | Mean ± SD |
+|---|---|---:|---|---:|
+| **Success** | 85.5 / 85.4 / 88.3 | **86.4 ± 1.7** | 89.8 / 89.9 / 89.4 | **89.7 ± 0.3** |
+| **Collisions** | 13.4 / 12.8 / 11.6 | **12.6 ± 0.9** | 10.2 / 9.6 / 10.4 | **10.0 ± 0.4** |
+| … poles | 5.1 / 5.4 / 6.2 | 5.6 | 5.4 / 6.0 / 6.0 | 5.8 |
+| … cylinders | 4.2 / 3.7 / 1.6 | 3.2 | 2.2 / 1.8 / 3.3 | 2.4 |
+| … walls | 2.0 / 1.7 / 2.1 | 1.9 | 1.5 / 1.1 / 0.3 | 1.0 |
+| … boxes | 2.0 / 1.8 / 1.6 | 1.8 | 1.0 / 0.7 / 0.7 | 0.8 |
+| Too high | 1.2 / 1.6 / 0.0 | 0.9 | 0.05 / 0 / 0 | 0.0 |
+| Speed near obstacles (m/s) | 3.26 / 3.25 / 3.28 | 3.26 | 2.75 / 2.81 / 2.77 | 2.78 |
+| Speed at a collision (m/s) | | 3.01 | | 2.54 |
+| Time to goal (s) | | 7.4 | | 8.2 |
+
+All in % of episodes unless stated. SD is across seeds.
+
+1. **The mild slowdown is a real improvement.** Every slowdown seed beats every baseline seed: +3.3 points of
+   success and −2.6 points of collisions on average. Welch's t is 3.4 (success) and 4.4 (collisions), on about 2–3
+   degrees of freedom. With 3 seeds per arm that's strong but not conclusive; no rank test on 3 against 3 can get
+   below p = 0.1. It is also more consistent: success varies by 0.3 points across seeds, against 1.7 for the
+   baseline. The cost is 0.8 s more to the goal (8.2 s against 7.4 s).
+2. **The gain comes from everything except poles.** Walls drop from 1.9% to 1.0%, boxes from 1.8% to 0.8%, cylinders
+   from 3.2% to 2.4%, and climbing out the top from 0.9% to 0. Poles stay at about 5.7% in all six runs.
+3. **Poles are now the entire gap to the exit criterion.** The slowdown's non-pole collisions add up to 4.2% of
+   episodes, already under the 5% target. Its pole collisions (5.8%) are more than everything else combined. Phase
+   2's next step is poles specifically, not more general shaping.
+4. Success (89.7%) is 0.3 points under the 90% target. Fixing poles would clear it too.
+
+**On poles, what we know:** they cause the same share of collisions with a 10° or 5° ring (§9), at 3 m/s or 2 m/s
+(§10.1), with or without a slowdown. So it isn't ray spacing or reaction time alone. Leads to follow:
+
+- **What does the drone see before a pole hit?** Log the horizontal lidar readings along the bearing of the hit pole
+  for the last second before a collision. If no ray ever returns the pole, it's a sensing gap; if rays see it and
+  the policy flies on, it's the policy.
+- **The ring's vertical coverage:** the lidar is level, and poles are vertical, so this shouldn't matter, but it's
+  worth confirming that the hit happens at the drone's own height.
+- **Collision radius against pole size:** a pole is 3–6 cm in radius. Passing at 0.1 m from its axis counts as a
+  collision, which is only 4–7 cm from its surface. That's a tighter margin than around cylinders, which the
+  policy may not have learned to respect. Not a reason to change the criterion, but worth knowing.
+
+## 11. What the drone sees before a collision, and a world-fixed ring
+
+`env.attribute_collisions=True` now also replays the last second of the horizontal lidar ring at each collision
+(`trace_steps=50` at the 50 Hz control rate). For every step it computes each ray's exact distance to the obstacle
+that was hit (`ray_hit_distances`), and from that whether the ring returned that obstacle, whether it fell between
+rays, or whether something closer hid it. Results are logged per obstacle kind as `Trace/<kind>_*`. Tests check the
+replay against independent analytic ray casts.
+
+**A bug the replay found.** The first run of the replay (with the same policy) reported that about half of the
+cylinder and box collisions had never been returned by any ray. That's impossible, since a collision is detected
+precisely because a ray returned something within 0.1 m. The replay assumed the rays turn with the drone's heading,
+as §2 said. They don't. Isaac Lab v2.3.2's `ray_alignment="yaw"` rotates the rays' *start points* by the yaw but
+leaves their *directions* alone (`RayCaster._update_ray_infos`: `ray_directions_w = self.ray_directions`). Our rays
+all start at the drone's centre, so **the ring has always been fixed in the world**: ray *i* points at the same
+compass bearing whatever the drone's heading.
+
+- Unaffected: collision detection, the proximity term and every distance metric (`min_obstacle_distance`,
+  `Collision/*`) take the minimum over the whole 360° ring, which doesn't depend on direction. All earlier
+  collision, attribution and success numbers stand.
+- Affected: the policy's observation. The lidar part is world-frame, while the goal direction and velocities are
+  body-frame, and nothing in the observation gives the heading. The policy can only infer how the two frames
+  relate indirectly, for example from the goal direction (goals are always roughly towards +x). That it reaches
+  about 90% anyway is somewhat surprising.
+
+The replay now uses world bearings, and §2 and the env's docstring are corrected.
+
+**Result.** The mild-slowdown policy (seed 42, [mh19cygo](https://forge.coreweave.com/wandb/vedssharma1/isaac-rl/runs/mh19cygo))
+on the 60 held-out level-5 layouts, 2000 episodes; it reproduces §10.1 exactly (89.8% / 10.15%):
+
+| Collisions with… | n | Never returned | Between rays (% of in-range steps) | First returned before impact | Distance then |
+|---|---:|---:|---:|---:|---:|
+| **pole** | 108 | 0% | **65%** | **0.45 s** | **1.38 m** |
+| cylinder | 43 | 0% | 2% | ≥ 0.96 s (the whole window) | 2.38 m |
+| box | 20 | 0% | 0% | ≥ 0.98 s | 2.37 m |
+| wall | 31 | 0% | 0% | ≥ 0.98 s | 1.55 m |
+
+1. **Pole collisions are a sensing problem.** Within range, a pole falls between the 10° rays on 65% of steps, so it
+   flickers in and out of the observation. A ray first returns it on average 0.45 s and 1.4 m before impact.
+   Every other obstacle is returned for the whole last second, from more than 2 m away (walls 1.6 m).
+2. Every hit obstacle was returned at least once, and none was hidden by another obstacle. So it's late, flickering
+   detection, not complete blindness. The MLP policy has no memory, so a pole that drops between rays is gone
+   from its input until it reappears.
+3. **The world-fixed ring makes this harder.** §9 found that a 5° ring alone didn't reduce pole collisions. A
+   likely reason: the policy doesn't know its heading, so it can't map a single return at a fixed compass bearing
+   to a body-relative dodge. Large obstacles survive this because they cover many rays continuously.
+
+**Next:**
+
+1. **Fix the ring's frame**, then retrain and compare on these 60 layouts. Either rotate the ray directions with the
+   drone's yaw every step (set the sensor's per-env `ray_directions` before each read), or give the policy its
+   heading (sin and cos of yaw) as two extra observations. The first is the cleaner observation. Behind a flag, so
+   earlier runs stay reproducible.
+2. **Then poles, with the frame fixed:** the 5° ring again, or memory (a GRU, PLAN.md Phase 3), so a pole that
+   drops between rays isn't forgotten. The teacher may also use privileged geometry directly (PLAN.md §4.2's "K
+   nearest obstacles" option).

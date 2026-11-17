@@ -5,7 +5,8 @@ terrain (drone_nav/terrain/obstacle_field.py), plus:
 
 - spawns in the tile's start strip and goals in its goal strip, instead of a random heading from the origin;
 - a privileged ray-cast "lidar ring" in the observation (PLAN.md §4.2, the Phase 2 teacher's sensing): 3 channels
-  at -15 / 0 / +15 degrees x 36 rays, 5 m range, kept level with the horizon (it follows the drone's yaw only);
+  at -15 / 0 / +15 degrees x 36 rays, 5 m range, level with the horizon and FIXED IN THE WORLD: ray i always
+  points at the same compass bearing, whatever the drone's heading (see the lidar cfg's ray_alignment note);
 - a collision termination when the horizontal channel sees an obstacle within collision_radius of the drone's
   centre (it counts as a crash), and a proximity reward term on the same distance;
 - a curriculum (PLAN.md §5.3): every env starts on level 0 and moves up or down a level on its recent success rate.
@@ -31,6 +32,9 @@ from drone_nav.tasks.goal.goal_env import DroneNavGoalCTBREnvCfg, DroneNavGoalEn
 from drone_nav.terrain import obstacle_field as of
 from drone_nav.terrain.obstacle_field import ObstacleFieldParams, spawn_and_goal_regions
 from drone_nav.terrain.obstacle_field_cfg import OBSTACLE_FIELD_GENERATOR_CFG
+
+# of.visibility_summary's fields, logged per obstacle kind as Trace/<kind>_<field>.
+TRACE_METRICS = ("never_returned", "first_return_s", "first_return_dist", "between_rays_frac", "occluded_frac")
 
 # The goal task's observation, which this one extends with the lidar ring.
 GOAL_OBS_DIM = DroneNavGoalCTBREnvCfg().observation_space
@@ -76,7 +80,12 @@ class DroneNavObstaclesEnvCfg(DroneNavGoalCTBREnvCfg):
     lidar: RayCasterCfg = RayCasterCfg(
         prim_path="/World/envs/env_.*/Robot/body",
         mesh_prim_paths=["/World/ground"],  # the terrain: one static mesh with every obstacle baked in
-        ray_alignment="yaw",  # level with the horizon whatever the drone's roll and pitch
+        # Isaac Lab v2.3.2's "yaw" alignment turns the rays' start points with the drone's yaw but NOT their
+        # directions (RayCaster._update_ray_infos: ray_directions_w = self.ray_directions). Our rays all start at
+        # the drone's centre, so the ring is level and world-fixed: ray i always points at world bearing
+        # horizontal angle i. The observation is therefore world-frame while the goal and velocities are
+        # body-frame. Found 2026-11-17 by the lidar replay (docs/phase2-obstacles.md §11).
+        ray_alignment="yaw",
         pattern_cfg=patterns.LidarPatternCfg(
             channels=3, vertical_fov_range=(-15.0, 15.0), horizontal_fov_range=(-180.0, 180.0), horizontal_res=10.0
         ),
@@ -87,6 +96,11 @@ class DroneNavObstaclesEnvCfg(DroneNavGoalCTBREnvCfg):
     # about 0.07 m out; 0.1 m is also the disk the terrain generator guarantees a path for.
     collision_radius = 0.1
     proximity_sigma = 0.3  # m: the proximity penalty is e^-1 of its maximum this far outside collision_radius
+    # Slow down near obstacles: the over-speed term's limit falls linearly from speed_limit, once the closest obstacle
+    # is slow_distance outside collision_radius, to near_speed_limit at contact (mdp.clearance_speed_limit). The
+    # policy cruises about 0.25 m/s above whichever limit applies. slow_distance=0.0 (the default) turns it off.
+    slow_distance: float = 0.0  # m of clearance
+    near_speed_limit: float = 1.5  # m/s
 
     # Spawn and goal points stay this far inside the start and goal strips (from their edges and the side walls).
     strip_margin = 0.5
@@ -109,6 +123,9 @@ class DroneNavObstaclesEnvCfg(DroneNavGoalCTBREnvCfg):
     attribute_collisions: bool = False
     # Warning time = how long the closest horizontal lidar reading had been within this distance before a collision.
     warning_distance: float = 1.0
+    # With attribute_collisions, also replay the last trace_steps steps (1 s at the 50 Hz control rate) of the
+    # horizontal lidar ring against the obstacle hit: was it ever seen, and from how far? Logged as Trace/*.
+    trace_steps: int = 50
 
     rewards: ObstacleRewardWeightsCfg = ObstacleRewardWeightsCfg()
 
@@ -122,6 +139,11 @@ class DroneNavObstaclesEnv(DroneNavGoalEnv):
         self._horizontal_channel = obs_mdp.horizontal_channel(pattern.channels, pattern.vertical_fov_range)
         n_rays = pattern.channels * obs_mdp.lidar_num_horizontal(pattern.horizontal_fov_range, pattern.horizontal_res)
         cfg.observation_space = GOAL_OBS_DIM + n_rays
+
+        if cfg.slow_distance > 0.0 and not 0.0 < cfg.near_speed_limit <= cfg.speed_limit:
+            raise ValueError(
+                f"near_speed_limit must be in (0, speed_limit={cfg.speed_limit}], not {cfg.near_speed_limit}"
+            )
 
         # The terrain generator gives every tile its own size, so the strips come from the generator's.
         generator = cfg.terrain.terrain_generator
@@ -168,6 +190,9 @@ class DroneNavObstaclesEnv(DroneNavGoalEnv):
 
         # How long the closest obstacle has been within warning_distance (collision attribution's warning time).
         self._near_time = torch.zeros(n, device=dev)
+        # Speed while something is within warning_distance, summed over the episode (Metrics/speed_near_obstacles).
+        self._near_speed_sum = torch.zeros(n, device=dev)
+        self._near_steps = torch.zeros(n, device=dev)
         self._tile_layouts = None
         if self.cfg.attribute_collisions:
             self._setup_attribution()
@@ -191,23 +216,75 @@ class DroneNavObstaclesEnv(DroneNavGoalEnv):
         self._hit_closing = torch.zeros(n, device=dev)  # speed towards the obstacle hit
         self._hit_warning = torch.zeros(n, device=dev)  # how long something had been within warning_distance
 
+        # Lidar replay: a ring buffer of the horizontal channel's readings, the drone's position and heading, written
+        # every step (all envs at the same slot), and how many valid steps each env has since its reset.
+        k = self.cfg.trace_steps
+        pattern = self.cfg.lidar.pattern_cfg
+        angles = obs_mdp.lidar_horizontal_angles(pattern.horizontal_fov_range, pattern.horizontal_res)
+        self._ray_offsets = np.deg2rad(angles.numpy().astype(np.float64))
+        # Which way the ring's ray 0 points: with the drone's yaw only for "base" alignment; for "yaw" and "world",
+        # Isaac Lab doesn't rotate ray directions at all (see the lidar cfg), so the ring is world-fixed.
+        self._ring_follows_yaw = self.cfg.lidar.ray_alignment == "base"
+        self._trace_read = torch.zeros(n, k, len(self._ray_offsets), device=dev)
+        self._trace_pos = torch.zeros(n, k, 2, device=dev)
+        self._trace_yaw = torch.zeros(n, k, device=dev)
+        self._trace_len = torch.zeros(n, dtype=torch.long, device=dev)
+        self._trace_ptr = 0
+        # Per collision (nan otherwise): of.visibility_summary of the obstacle hit.
+        self._vis = {name: torch.full((n,), float("nan"), device=dev) for name in TRACE_METRICS}
+
+    def _record_trace(self) -> None:
+        n = self.num_envs
+        horizontal = self._lidar_dist.view(n, self._lidar_channels, -1)[:, self._horizontal_channel]
+        q = self._robot.data.root_quat_w  # (w, x, y, z)
+        yaw = torch.atan2(2.0 * (q[:, 0] * q[:, 3] + q[:, 1] * q[:, 2]), 1.0 - 2.0 * (q[:, 2] ** 2 + q[:, 3] ** 2))
+        self._trace_read[:, self._trace_ptr] = horizontal
+        self._trace_pos[:, self._trace_ptr] = self._robot.data.root_pos_w[:, :2]
+        self._trace_yaw[:, self._trace_ptr] = yaw
+        self._trace_ptr = (self._trace_ptr + 1) % self.cfg.trace_steps
+        self._trace_len = (self._trace_len + 1).clamp(max=self.cfg.trace_steps)
+
     def _attribute(self, ids: torch.Tensor) -> None:
         """Fill the collision buffers for envs `ids`, which just collided."""
         pos = self._robot.data.root_pos_w[ids, :2].cpu().numpy()
         vel = self._robot.data.root_lin_vel_w[ids, :2].cpu().numpy()
         rows = self._episode_level[ids].cpu().numpy()
         cols = self._terrain.terrain_types[ids].cpu().numpy()
+        # The last trace_len steps of each collided env's trace, oldest first (the current step was just recorded).
+        size = self.cfg.trace_steps
+        lengths = self._trace_len[ids].cpu().numpy()
+        trace_read = self._trace_read[ids].cpu().numpy()
+        trace_pos = self._trace_pos[ids].cpu().numpy()
+        trace_yaw = self._trace_yaw[ids].cpu().numpy()
         kinds, dists, closing = [], [], []
+        vis_rows = {name: [] for name in TRACE_METRICS}
         for k in range(len(ids)):
             r, c = int(rows[k]), int(cols[k])
-            p_tile = pos[k] - self._terrain_origins_np[r, c, :2] + self._origin_in_tile
-            kind, dist, nearest = of.nearest_obstacle(self._tile_layouts[(r, c)], p_tile)
+            shift = self._origin_in_tile - self._terrain_origins_np[r, c, :2]  # world -> tile frame
+            p_tile = pos[k] + shift
+            kind, dist, nearest, obstacle = of.nearest_footprint(self._tile_layouts[(r, c)], p_tile)
             to = nearest - p_tile
             norm = float(np.linalg.norm(to))
             kinds.append(of.ATTRIBUTION_KINDS.index(kind))
             dists.append(dist)
             closing.append(float(vel[k] @ to) / norm if norm > 1e-9 else float(np.linalg.norm(vel[k])))
+            summary = dict.fromkeys(TRACE_METRICS, float("nan"))
+            if obstacle is not None and lengths[k] > 0:
+                order = (self._trace_ptr - lengths[k] + np.arange(lengths[k])) % size
+                vis = of.obstacle_visibility(
+                    obstacle,
+                    trace_pos[k, order] + shift,
+                    trace_yaw[k, order] if self._ring_follows_yaw else np.zeros(lengths[k]),
+                    self._ray_offsets,
+                    trace_read[k, order],
+                    self._max_range,
+                )
+                summary = of.visibility_summary(vis, self.step_dt)
+            for name in TRACE_METRICS:
+                vis_rows[name].append(summary[name])
         dev = self.device
+        for name in TRACE_METRICS:
+            self._vis[name][ids] = torch.tensor(vis_rows[name], dtype=torch.float, device=dev)
         self._hit_kind[ids] = torch.tensor(kinds, dtype=torch.long, device=dev)
         self._hit_dist[ids] = torch.tensor(dists, dtype=torch.float, device=dev)
         self._hit_speed[ids] = torch.linalg.norm(self._robot.data.root_lin_vel_w[ids, :2], dim=1)
@@ -240,8 +317,13 @@ class DroneNavObstaclesEnv(DroneNavGoalEnv):
         hit = obs_mdp.collided(self._min_dist, self.cfg.collision_radius)
         near = self._min_dist < self.cfg.warning_distance
         self._near_time = torch.where(near, self._near_time + self.step_dt, torch.zeros_like(self._near_time))
-        if self._tile_layouts is not None and hit.any():
-            self._attribute(hit.nonzero(as_tuple=False).squeeze(-1))
+        speed = torch.linalg.norm(self._robot.data.root_lin_vel_w[:, :2], dim=1)
+        self._near_speed_sum += speed * near.float()
+        self._near_steps += near.float()
+        if self._tile_layouts is not None:
+            self._record_trace()
+            if hit.any():
+                self._attribute(hit.nonzero(as_tuple=False).squeeze(-1))
         # A collision is a crash: it ends the episode, takes the crash penalty and overrides reaching the goal.
         self._terms["collision"] = hit
         self._terms["goal"] = self._terms["goal"] & ~hit
@@ -259,6 +341,18 @@ class DroneNavObstaclesEnv(DroneNavGoalEnv):
         self._episode_sums["proximity"] += proximity
         return reward + proximity
 
+    def _speed_limit(self) -> float | torch.Tensor:
+        # _get_dones (which reads the lidar into _min_dist) runs before _get_rewards in DirectRLEnv.step.
+        if self.cfg.slow_distance <= 0.0:
+            return self.cfg.speed_limit
+        return obs_mdp.clearance_speed_limit(
+            self._min_dist,
+            self.cfg.collision_radius,
+            self.cfg.speed_limit,
+            self.cfg.near_speed_limit,
+            self.cfg.slow_distance,
+        )
+
     def _reset_idx(self, env_ids: torch.Tensor | None):
         if env_ids is None or len(env_ids) == self.num_envs:
             env_ids = self._robot._ALL_INDICES
@@ -273,8 +367,13 @@ class DroneNavObstaclesEnv(DroneNavGoalEnv):
         self._episode_level[env_ids] = self._terrain.terrain_levels[env_ids]
         self._min_dist_episode[env_ids] = self._max_range
         self._near_time[env_ids] = 0.0
+        self._near_speed_sum[env_ids] = 0.0
+        self._near_steps[env_ids] = 0.0
         if self._tile_layouts is not None:
             self._hit_kind[env_ids] = -1
+            self._trace_len[env_ids] = 0
+            for value in self._vis.values():
+                value[env_ids] = float("nan")
 
     def _sample_goal_offsets(self, n: int) -> torch.Tensor:
         """Anywhere in the tile's goal strip, at the goal task's altitudes."""
@@ -292,6 +391,9 @@ class DroneNavObstaclesEnv(DroneNavGoalEnv):
             return
         # Closest an obstacle came to the drone's centre during the episode (horizontal, capped at the lidar range).
         log["Metrics/min_obstacle_distance"] = self._min_dist_episode[ended]
+        # Mean horizontal speed while an obstacle was within warning_distance, over episodes that came that close.
+        steps = self._near_steps[ended]
+        log["Metrics/speed_near_obstacles"] = (self._near_speed_sum[ended] / steps.clamp(min=1.0))[steps > 0]
         log["Curriculum/terrain_level"] = self._episode_level[ended].float()  # the level each episode was played on
         # Difficulty histogram over all envs (PLAN.md §5.3: "your best progress chart").
         for level, fraction in enumerate(level_fractions(self._terrain.terrain_levels, self._num_levels)):
@@ -310,3 +412,10 @@ class DroneNavObstaclesEnv(DroneNavGoalEnv):
             log["Collision/closing_speed"] = self._hit_closing[ended][collided]
             log["Collision/warning_time_s"] = self._hit_warning[ended][collided]
             log["Collision/attribution_distance"] = self._hit_dist[ended][collided]
+            # Lidar replay per obstacle kind, over that kind's collisions: never_returned is a rate; the rest are
+            # means over the collisions where they're defined (first_return_* only where the obstacle was seen).
+            for j, name in enumerate(of.KINDS):
+                of_kind = kind == j
+                for metric in TRACE_METRICS:
+                    values = self._vis[metric][ended][of_kind]
+                    log[f"Trace/{name}_{metric}"] = values[~torch.isnan(values)]

@@ -79,6 +79,21 @@ def test_proximity_penalty():
     assert torch.all(p[1:] - p[:-1] >= 0)  # never cheaper to be closer
 
 
+def test_clearance_speed_limit():
+    cruise, near, slow = 3.0, 1.5, 1.0
+    d = torch.tensor([0.05, COLLISION_RADIUS, COLLISION_RADIUS + 0.5, COLLISION_RADIUS + slow, RANGE])
+    limit = mdp.clearance_speed_limit(d, COLLISION_RADIUS, cruise, near, slow)
+    # near_speed_limit at (or inside) contact, halfway at half slow_distance, cruise from slow_distance out.
+    torch.testing.assert_close(limit, torch.tensor([1.5, 1.5, 2.25, 3.0, 3.0]))
+    assert torch.all(limit[1:] - limit[:-1] >= 0)  # never a higher limit closer in
+
+
+def test_clearance_speed_limit_off():
+    d = torch.tensor([0.05, 0.5, RANGE])
+    limit = mdp.clearance_speed_limit(d, COLLISION_RADIUS, 3.0, 1.5, slow_distance=0.0)
+    torch.testing.assert_close(limit, torch.full((3,), 3.0))
+
+
 def test_sample_in_box():
     g = torch.Generator().manual_seed(0)
     pts = mdp.sample_in_box(5000, ((-0.9, 0.9), (-4.7, 4.7)), (1.0, 1.5), generator=g)
@@ -94,3 +109,12 @@ def test_sample_in_box_is_float32_even_from_numpy_bounds():
 
     box = ((np.float64(-0.5), np.float64(0.5)), (np.float64(-4.3), np.float64(4.3)))
     assert mdp.sample_in_box(4, box, (np.float64(1.0), 1.5)).dtype == torch.float32
+
+
+def test_lidar_horizontal_angles_match_the_pattern():
+    a = mdp.lidar_horizontal_angles(HFOV, HRES)
+    assert len(a) == mdp.lidar_num_horizontal(HFOV, HRES) == 36
+    assert a[0] == -180.0 and a[-1] == pytest.approx(170.0)
+    assert len(mdp.lidar_horizontal_angles(HFOV, 5.0)) == 72
+    b = mdp.lidar_horizontal_angles((-90.0, 90.0), 5.0)
+    assert len(b) == 37 and b[-1] == 90.0  # a partial fan keeps both ends

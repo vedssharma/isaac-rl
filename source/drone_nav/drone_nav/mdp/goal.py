@@ -96,7 +96,7 @@ def compute_reward_terms(
     ang_vel_b: torch.Tensor,
     upz: torch.Tensor,
     speed: torch.Tensor,
-    speed_limit: float,
+    speed_limit: float | torch.Tensor,
     step_dt: float,
     weights: dict[str, float],
 ) -> dict[str, torch.Tensor]:
@@ -104,7 +104,7 @@ def compute_reward_terms(
 
     Progress is in metres closed this step, and the sparse terms are per event, so neither is scaled by
     step_dt. The rest are rates (per second), so they are multiplied by step_dt and an episode's total doesn't
-    depend on the control frequency.
+    depend on the control frequency. speed_limit is one value for every env or a (n,) tensor of per-env limits.
     """
     return {
         "progress": weights["progress"] * (prev_dist - dist),
