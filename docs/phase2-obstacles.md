@@ -21,6 +21,8 @@ Status:
   10.2% (baseline 85.5% / 13.4%), one seed. Poles are now the largest single cause.
 - [x] Three seeds of the mild slowdown vs the baseline (§10.2): 89.7% / 10.0% against 86.4% / 12.6%. Poles
   (5.8%) are now the entire gap to the < 5% collision target.
+- [x] Lidar replay of collisions (§11): poles fall between rays 65% of the time and are first seen 0.45 s before
+  impact. It also found the ring is world-fixed, not yaw-following (a bug in our assumptions about Isaac Lab).
 - [ ] Ablations
 
 ## 1. Obstacle terrain
@@ -557,3 +559,59 @@ All in % of episodes unless stated. SD is across seeds.
 - **Collision radius against pole size:** a pole is 3–6 cm in radius. Passing at 0.1 m from its axis counts as a
   collision, which is only 4–7 cm from its surface. That's a tighter margin than around cylinders, which the
   policy may not have learned to respect. Not a reason to change the criterion, but worth knowing.
+
+## 11. What the drone sees before a collision, and a world-fixed ring
+
+`env.attribute_collisions=True` now also replays the last second of the horizontal lidar ring at each collision
+(`trace_steps=50` at the 50 Hz control rate). For every step it computes each ray's exact distance to the obstacle
+that was hit (`ray_hit_distances`), and from that whether the ring returned that obstacle, whether it fell between
+rays, or whether something closer hid it. Results are logged per obstacle kind as `Trace/<kind>_*`. Tests check the
+replay against independent analytic ray casts.
+
+**A bug the replay found.** The first run of the replay (with the same policy) reported that about half of the
+cylinder and box collisions had never been returned by any ray. That's impossible, since a collision is detected
+precisely because a ray returned something within 0.1 m. The replay assumed the rays turn with the drone's heading,
+as §2 said. They don't. Isaac Lab v2.3.2's `ray_alignment="yaw"` rotates the rays' *start points* by the yaw but
+leaves their *directions* alone (`RayCaster._update_ray_infos`: `ray_directions_w = self.ray_directions`). Our rays
+all start at the drone's centre, so **the ring has always been fixed in the world**: ray *i* points at the same
+compass bearing whatever the drone's heading.
+
+- Unaffected: collision detection, the proximity term and every distance metric (`min_obstacle_distance`,
+  `Collision/*`) take the minimum over the whole 360° ring, which doesn't depend on direction. All earlier
+  collision, attribution and success numbers stand.
+- Affected: the policy's observation. The lidar part is world-frame, while the goal direction and velocities are
+  body-frame, and nothing in the observation gives the heading. The policy can only infer how the two frames
+  relate indirectly, for example from the goal direction (goals are always roughly towards +x). That it reaches
+  about 90% anyway is somewhat surprising.
+
+The replay now uses world bearings, and §2 and the env's docstring are corrected.
+
+**Result.** The mild-slowdown policy (seed 42, [mh19cygo](https://forge.coreweave.com/wandb/vedssharma1/isaac-rl/runs/mh19cygo))
+on the 60 held-out level-5 layouts, 2000 episodes; it reproduces §10.1 exactly (89.8% / 10.15%):
+
+| Collisions with… | n | Never returned | Between rays (% of in-range steps) | First returned before impact | Distance then |
+|---|---:|---:|---:|---:|---:|
+| **pole** | 108 | 0% | **65%** | **0.45 s** | **1.38 m** |
+| cylinder | 43 | 0% | 2% | ≥ 0.96 s (the whole window) | 2.38 m |
+| box | 20 | 0% | 0% | ≥ 0.98 s | 2.37 m |
+| wall | 31 | 0% | 0% | ≥ 0.98 s | 1.55 m |
+
+1. **Pole collisions are a sensing problem.** Within range, a pole falls between the 10° rays on 65% of steps, so it
+   flickers in and out of the observation. A ray first returns it on average 0.45 s and 1.4 m before impact.
+   Every other obstacle is returned for the whole last second, from more than 2 m away (walls 1.6 m).
+2. Every hit obstacle was returned at least once, and none was hidden by another obstacle. So it's late, flickering
+   detection, not complete blindness. The MLP policy has no memory, so a pole that drops between rays is gone
+   from its input until it reappears.
+3. **The world-fixed ring makes this harder.** §9 found that a 5° ring alone didn't reduce pole collisions. A
+   likely reason: the policy doesn't know its heading, so it can't map a single return at a fixed compass bearing
+   to a body-relative dodge. Large obstacles survive this because they cover many rays continuously.
+
+**Next:**
+
+1. **Fix the ring's frame**, then retrain and compare on these 60 layouts. Either rotate the ray directions with the
+   drone's yaw every step (set the sensor's per-env `ray_directions` before each read), or give the policy its
+   heading (sin and cos of yaw) as two extra observations. The first is the cleaner observation. Behind a flag, so
+   earlier runs stay reproducible.
+2. **Then poles, with the frame fixed:** the 5° ring again, or memory (a GRU, PLAN.md Phase 3), so a pole that
+   drops between rays isn't forgotten. The teacher may also use privileged geometry directly (PLAN.md §4.2's "K
+   nearest obstacles" option).
