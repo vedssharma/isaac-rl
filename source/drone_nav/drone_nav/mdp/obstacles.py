@@ -71,6 +71,19 @@ def proximity_penalty(
     return -weight * torch.exp(-clearance / sigma) * step_dt
 
 
+def clearance_speed_limit(
+    min_dist: torch.Tensor, collision_radius: float, cruise: float, near: float, slow_distance: float
+) -> torch.Tensor:
+    """(n,) per-env speed limit for the over-speed term: `cruise` once the closest obstacle is at least
+    slow_distance outside the collision radius, falling linearly to `near` at contact. slow_distance <= 0 turns it
+    off (cruise everywhere). Like the proximity term it uses the closest horizontal hit in any direction, so the
+    drone also slows when it passes an obstacle side-on, not only when it heads at one."""
+    if slow_distance <= 0.0:
+        return torch.full_like(min_dist, cruise)
+    clearance = (min_dist - collision_radius).clamp(min=0.0)
+    return near + (cruise - near) * (clearance / slow_distance).clamp(max=1.0)
+
+
 def sample_in_box(
     n: int,
     box: tuple[tuple[float, float], tuple[float, float]],

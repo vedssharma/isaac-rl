@@ -275,7 +275,7 @@ class DroneNavGoalEnv(DirectRLEnv):
             ang_vel_b=self._robot.data.root_ang_vel_b,
             upz=mdp.up_z(self._robot.data.projected_gravity_b),
             speed=torch.linalg.norm(self._robot.data.root_lin_vel_w, dim=1),
-            speed_limit=self.cfg.speed_limit,
+            speed_limit=self._speed_limit(),
             step_dt=self.step_dt,
             weights=self._weights,
         )
@@ -283,6 +283,11 @@ class DroneNavGoalEnv(DirectRLEnv):
         for key, value in terms.items():
             self._episode_sums[key] += value
         return torch.stack(list(terms.values())).sum(dim=0)
+
+    def _speed_limit(self) -> float | torch.Tensor:
+        """The over-speed term's limit this step: cfg.speed_limit, or a (n,) tensor of per-env limits in subclasses
+        (e.g. slower near obstacles)."""
+        return self.cfg.speed_limit
 
     def _reset_idx(self, env_ids: torch.Tensor | None):
         if env_ids is None or len(env_ids) == self.num_envs:

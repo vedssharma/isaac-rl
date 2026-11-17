@@ -138,6 +138,24 @@ def test_no_overspeed_penalty_at_or_below_the_limit():
         assert rewards(speed=torch.tensor([v]))["overspeed"].item() == 0.0
 
 
+def test_overspeed_takes_per_env_limits():
+    """A (n,) tensor of limits (e.g. slower near obstacles) applies one limit per env."""
+    n = 3
+    terms = rewards(
+        prev_dist=torch.full((n,), 10.0),
+        dist=torch.full((n,), 9.9),
+        reached=torch.zeros(n, dtype=torch.bool),
+        crashed=torch.zeros(n, dtype=torch.bool),
+        action=torch.zeros(n, 4),
+        prev_action=torch.zeros(n, 4),
+        ang_vel_b=torch.zeros(n, 3),
+        upz=torch.ones(n),
+        speed=torch.tensor([2.0, 2.0, 2.0]),
+        speed_limit=torch.tensor([3.0, 1.5, 1.0]),
+    )
+    torch.testing.assert_close(terms["overspeed"], torch.tensor([0.0, -2.0 * 0.25 * DT, -2.0 * 1.0 * DT]))
+
+
 def test_best_cruise_speed_is_just_above_the_limit():
     """Per second, flying straight at speed v earns v (progress) minus the over-speed penalty. Its maximum is at
     v = limit + 1 / (2 x weight): 3.25 m/s with the default weights, far below the 10 m/s of the uncapped baseline."""

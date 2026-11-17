@@ -87,6 +87,11 @@ class DroneNavObstaclesEnvCfg(DroneNavGoalCTBREnvCfg):
     # about 0.07 m out; 0.1 m is also the disk the terrain generator guarantees a path for.
     collision_radius = 0.1
     proximity_sigma = 0.3  # m: the proximity penalty is e^-1 of its maximum this far outside collision_radius
+    # Slow down near obstacles: the over-speed term's limit falls linearly from speed_limit, once the closest obstacle
+    # is slow_distance outside collision_radius, to near_speed_limit at contact (mdp.clearance_speed_limit). The
+    # policy cruises about 0.25 m/s above whichever limit applies. slow_distance=0.0 (the default) turns it off.
+    slow_distance: float = 0.0  # m of clearance
+    near_speed_limit: float = 1.5  # m/s
 
     # Spawn and goal points stay this far inside the start and goal strips (from their edges and the side walls).
     strip_margin = 0.5
@@ -122,6 +127,11 @@ class DroneNavObstaclesEnv(DroneNavGoalEnv):
         self._horizontal_channel = obs_mdp.horizontal_channel(pattern.channels, pattern.vertical_fov_range)
         n_rays = pattern.channels * obs_mdp.lidar_num_horizontal(pattern.horizontal_fov_range, pattern.horizontal_res)
         cfg.observation_space = GOAL_OBS_DIM + n_rays
+
+        if cfg.slow_distance > 0.0 and not 0.0 < cfg.near_speed_limit <= cfg.speed_limit:
+            raise ValueError(
+                f"near_speed_limit must be in (0, speed_limit={cfg.speed_limit}], not {cfg.near_speed_limit}"
+            )
 
         # The terrain generator gives every tile its own size, so the strips come from the generator's.
         generator = cfg.terrain.terrain_generator
@@ -168,6 +178,9 @@ class DroneNavObstaclesEnv(DroneNavGoalEnv):
 
         # How long the closest obstacle has been within warning_distance (collision attribution's warning time).
         self._near_time = torch.zeros(n, device=dev)
+        # Speed while something is within warning_distance, summed over the episode (Metrics/speed_near_obstacles).
+        self._near_speed_sum = torch.zeros(n, device=dev)
+        self._near_steps = torch.zeros(n, device=dev)
         self._tile_layouts = None
         if self.cfg.attribute_collisions:
             self._setup_attribution()
@@ -240,6 +253,9 @@ class DroneNavObstaclesEnv(DroneNavGoalEnv):
         hit = obs_mdp.collided(self._min_dist, self.cfg.collision_radius)
         near = self._min_dist < self.cfg.warning_distance
         self._near_time = torch.where(near, self._near_time + self.step_dt, torch.zeros_like(self._near_time))
+        speed = torch.linalg.norm(self._robot.data.root_lin_vel_w[:, :2], dim=1)
+        self._near_speed_sum += speed * near.float()
+        self._near_steps += near.float()
         if self._tile_layouts is not None and hit.any():
             self._attribute(hit.nonzero(as_tuple=False).squeeze(-1))
         # A collision is a crash: it ends the episode, takes the crash penalty and overrides reaching the goal.
@@ -259,6 +275,18 @@ class DroneNavObstaclesEnv(DroneNavGoalEnv):
         self._episode_sums["proximity"] += proximity
         return reward + proximity
 
+    def _speed_limit(self) -> float | torch.Tensor:
+        # _get_dones (which reads the lidar into _min_dist) runs before _get_rewards in DirectRLEnv.step.
+        if self.cfg.slow_distance <= 0.0:
+            return self.cfg.speed_limit
+        return obs_mdp.clearance_speed_limit(
+            self._min_dist,
+            self.cfg.collision_radius,
+            self.cfg.speed_limit,
+            self.cfg.near_speed_limit,
+            self.cfg.slow_distance,
+        )
+
     def _reset_idx(self, env_ids: torch.Tensor | None):
         if env_ids is None or len(env_ids) == self.num_envs:
             env_ids = self._robot._ALL_INDICES
@@ -273,6 +301,8 @@ class DroneNavObstaclesEnv(DroneNavGoalEnv):
         self._episode_level[env_ids] = self._terrain.terrain_levels[env_ids]
         self._min_dist_episode[env_ids] = self._max_range
         self._near_time[env_ids] = 0.0
+        self._near_speed_sum[env_ids] = 0.0
+        self._near_steps[env_ids] = 0.0
         if self._tile_layouts is not None:
             self._hit_kind[env_ids] = -1
 
@@ -292,6 +322,9 @@ class DroneNavObstaclesEnv(DroneNavGoalEnv):
             return
         # Closest an obstacle came to the drone's centre during the episode (horizontal, capped at the lidar range).
         log["Metrics/min_obstacle_distance"] = self._min_dist_episode[ended]
+        # Mean horizontal speed while an obstacle was within warning_distance, over episodes that came that close.
+        steps = self._near_steps[ended]
+        log["Metrics/speed_near_obstacles"] = (self._near_speed_sum[ended] / steps.clamp(min=1.0))[steps > 0]
         log["Curriculum/terrain_level"] = self._episode_level[ended].float()  # the level each episode was played on
         # Difficulty histogram over all envs (PLAN.md §5.3: "your best progress chart").
         for level, fraction in enumerate(level_fractions(self._terrain.terrain_levels, self._num_levels)):
