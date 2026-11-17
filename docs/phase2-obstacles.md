@@ -17,6 +17,7 @@ Status:
 - [x] 5° lidar ring (§8): overall level-5 collisions stay about 10–12%.
 - [x] Collision attribution (§9): walls and poles cause about two thirds of collisions. Cylinders and boxes are
   handled well.
+- [ ] Slowing down near obstacles, evaluated on 60 held-out layouts (§10): built, not run yet.
 - [ ] Ablations
 
 ## 1. Obstacle terrain
@@ -408,3 +409,46 @@ through a 1.2 m door. Both also need a late, sharp correction at 3 m/s. Two thin
 
 The held-out set is also still 20 layouts per evaluation (§6); any decision-making run should cover all three test
 seeds.
+
+## 10. Slowing down near obstacles, and a 60-layout evaluation
+
+§9 found that collisions happen at full cruise speed with about 0.4 s of warning, mostly on walls and poles. This
+section adds a speed limit that depends on clearance, so the policy can still cruise in open space, and an
+evaluation set large enough to compare runs. Both are built and CPU-tested; nothing has been trained with them yet.
+
+**Clearance-based speed limit.** The over-speed term (Phase 1: −2 × (speed − limit)² per second above the limit)
+now takes a per-env limit. With `env.slow_distance` > 0, the limit falls linearly from `speed_limit` (3 m/s) once
+the closest horizontal lidar hit is `slow_distance` outside the 0.1 m collision radius, down to
+`env.near_speed_limit` at contact ([`clearance_speed_limit`](../source/drone_nav/drone_nav/mdp/obstacles.py)).
+Since progress pays 1 per metre, the best speed is always about 0.25 m/s above whichever limit applies (the Phase 1
+derivation), so the policy should settle at roughly limit + 0.25 near obstacles too. `slow_distance=0.0` (the
+default) turns it off, which keeps every earlier run reproducible. Like the proximity term, it uses the closest hit
+in any direction, so passing a wall side-on also slows the drone; the cost is some time to goal.
+
+A new metric, `Metrics/speed_near_obstacles`, is the mean horizontal speed while something is within
+`warning_distance` (1 m), over episodes that came that close. It shows directly whether the policy slows down. For
+the §5 baseline it should read close to the 3.0–3.2 m/s collision speeds from §9.
+
+**60 held-out layouts in one evaluation.** Isaac Lab builds curriculum tiles column by column from the generator
+seed, so `env.terrain.terrain_generator.num_cols=60` with seed 1001 gives level 5 sixty tiles: the 20 in today's
+held-out set, plus 40 new ones. That's one Isaac Sim start instead of three seeds to pool, and
+`attribute_collisions` works with any column count. 2000 episodes over 60 tiles is about 33 per tile. Spec:
+
+```
+--eval-episodes 2000 --eval eval_heldout60_l5:env.eval_terrain_level=5,env.terrain.terrain_generator.seed=1001,\
+env.terrain.terrain_generator.num_cols=60,env.attribute_collisions=True,--num_envs=1024
+```
+
+**Planned runs** (seed 42, 4096 envs, 1500 iterations, curriculum on, each with the evaluation above):
+
+| Run | Overrides | Question |
+|---|---|---|
+| `p2-slow-n15-d10-s42` | `env.slow_distance=1.0 env.near_speed_limit=1.5` | Does slowing near obstacles cut collisions? |
+| `p2-slow-n10-d15-s42` | `env.slow_distance=1.5 env.near_speed_limit=1.0` | A stronger slowdown, starting further out |
+| `p2-speed2-s42` | `env.speed_limit=2.0` | Is a slower drone everywhere just as good? |
+
+Plus the §5 baseline checkpoint ([x7x2fl6t](https://forge.coreweave.com/wandb/vedssharma1/isaac-rl/runs/x7x2fl6t))
+on the same 60 layouts, with `launch.py --script play`, so every run is compared on the same maps. What to read:
+held-out collisions (target < 5%), success (≥ 90%), the wall and pole rows of the attribution, time to goal and
+`Metrics/speed_near_obstacles`. If a variant clearly wins, the next step is 3 seeds of it and of the baseline
+(PLAN.md ablation (d)).
