@@ -5,7 +5,8 @@ terrain (drone_nav/terrain/obstacle_field.py), plus:
 
 - spawns in the tile's start strip and goals in its goal strip, instead of a random heading from the origin;
 - a privileged ray-cast "lidar ring" in the observation (PLAN.md §4.2, the Phase 2 teacher's sensing): 3 channels
-  at -15 / 0 / +15 degrees x 36 rays, 5 m range, kept level with the horizon (it follows the drone's yaw only);
+  at -15 / 0 / +15 degrees x 36 rays, 5 m range, level with the horizon and FIXED IN THE WORLD: ray i always
+  points at the same compass bearing, whatever the drone's heading (see the lidar cfg's ray_alignment note);
 - a collision termination when the horizontal channel sees an obstacle within collision_radius of the drone's
   centre (it counts as a crash), and a proximity reward term on the same distance;
 - a curriculum (PLAN.md §5.3): every env starts on level 0 and moves up or down a level on its recent success rate.
@@ -79,7 +80,12 @@ class DroneNavObstaclesEnvCfg(DroneNavGoalCTBREnvCfg):
     lidar: RayCasterCfg = RayCasterCfg(
         prim_path="/World/envs/env_.*/Robot/body",
         mesh_prim_paths=["/World/ground"],  # the terrain: one static mesh with every obstacle baked in
-        ray_alignment="yaw",  # level with the horizon whatever the drone's roll and pitch
+        # Isaac Lab v2.3.2's "yaw" alignment turns the rays' start points with the drone's yaw but NOT their
+        # directions (RayCaster._update_ray_infos: ray_directions_w = self.ray_directions). Our rays all start at
+        # the drone's centre, so the ring is level and world-fixed: ray i always points at world bearing
+        # horizontal angle i. The observation is therefore world-frame while the goal and velocities are
+        # body-frame. Found 2026-11-17 by the lidar replay (docs/phase2-obstacles.md §11).
+        ray_alignment="yaw",
         pattern_cfg=patterns.LidarPatternCfg(
             channels=3, vertical_fov_range=(-15.0, 15.0), horizontal_fov_range=(-180.0, 180.0), horizontal_res=10.0
         ),
@@ -216,6 +222,9 @@ class DroneNavObstaclesEnv(DroneNavGoalEnv):
         pattern = self.cfg.lidar.pattern_cfg
         angles = obs_mdp.lidar_horizontal_angles(pattern.horizontal_fov_range, pattern.horizontal_res)
         self._ray_offsets = np.deg2rad(angles.numpy().astype(np.float64))
+        # Which way the ring's ray 0 points: with the drone's yaw only for "base" alignment; for "yaw" and "world",
+        # Isaac Lab doesn't rotate ray directions at all (see the lidar cfg), so the ring is world-fixed.
+        self._ring_follows_yaw = self.cfg.lidar.ray_alignment == "base"
         self._trace_read = torch.zeros(n, k, len(self._ray_offsets), device=dev)
         self._trace_pos = torch.zeros(n, k, 2, device=dev)
         self._trace_yaw = torch.zeros(n, k, device=dev)
@@ -265,7 +274,7 @@ class DroneNavObstaclesEnv(DroneNavGoalEnv):
                 vis = of.obstacle_visibility(
                     obstacle,
                     trace_pos[k, order] + shift,
-                    trace_yaw[k, order],
+                    trace_yaw[k, order] if self._ring_follows_yaw else np.zeros(lengths[k]),
                     self._ray_offsets,
                     trace_read[k, order],
                     self._max_range,

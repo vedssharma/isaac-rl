@@ -94,9 +94,11 @@ was the Phase 1 decision). The obstacle-specific math is plain torch in
   one tile. It spawns anywhere in the start strip and its goal is anywhere in the goal strip, both at least 0.5 m
   from the strip edges and the side walls. Yaw is random, as in Phase 1.
 - **Lidar ring** (PLAN.md §4.2, the teacher's privileged sensing). An Isaac Lab `RayCaster` on the drone's body
-  casts 3 channels (−15°, 0°, +15°) × 36 rays (every 10°) against the terrain mesh, out to 5 m. It turns with
-  the drone's yaw but stays level with the horizon, so pitching forward to accelerate doesn't point it at the
-  ground. Each ray's distance / 5 m is appended to the Phase 1 observation: 18 + 108 = 126 inputs.
+  casts 3 channels (−15°, 0°, +15°) × 36 rays (every 10°) against the terrain mesh, out to 5 m. It stays level
+  with the horizon, so pitching forward to accelerate doesn't point it at the ground. ~~It turns with the drone's
+  yaw.~~ **Correction (§11):** it doesn't. Isaac Lab's `ray_alignment="yaw"` turns only the rays' start points, so
+  the ring is fixed in the world: the lidar part of the observation is world-frame, while the goal and velocities
+  are body-frame. Each ray's distance / 5 m is appended to the Phase 1 observation: 18 + 108 = 126 inputs.
 - **Collision** ends the episode as a crash, with the usual crash penalty, when the horizontal channel sees an
   obstacle within 0.1 m of the drone's centre. Obstacles are vertical and taller than the flight ceiling, so the
   horizontal channel always sees what the drone could hit. A test checks that 10° spacing can't miss one:
