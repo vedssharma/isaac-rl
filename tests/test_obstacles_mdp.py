@@ -109,3 +109,12 @@ def test_sample_in_box_is_float32_even_from_numpy_bounds():
 
     box = ((np.float64(-0.5), np.float64(0.5)), (np.float64(-4.3), np.float64(4.3)))
     assert mdp.sample_in_box(4, box, (np.float64(1.0), 1.5)).dtype == torch.float32
+
+
+def test_lidar_horizontal_angles_match_the_pattern():
+    a = mdp.lidar_horizontal_angles(HFOV, HRES)
+    assert len(a) == mdp.lidar_num_horizontal(HFOV, HRES) == 36
+    assert a[0] == -180.0 and a[-1] == pytest.approx(170.0)
+    assert len(mdp.lidar_horizontal_angles(HFOV, 5.0)) == 72
+    b = mdp.lidar_horizontal_angles((-90.0, 90.0), 5.0)
+    assert len(b) == 37 and b[-1] == 90.0  # a partial fan keeps both ends

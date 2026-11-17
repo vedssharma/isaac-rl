@@ -24,6 +24,15 @@ def lidar_num_horizontal(horizontal_fov_range: tuple[float, float], horizontal_r
     return n - 1 if abs(abs(fov) - 360.0) < 1e-6 else n
 
 
+def lidar_horizontal_angles(horizontal_fov_range: tuple[float, float], horizontal_res: float) -> torch.Tensor:
+    """Angle (degrees, relative to the drone's heading) of each ray in a channel, in the ray caster's order (as
+    Isaac Lab's lidar_pattern: evenly spaced over the field of view, the duplicate end dropped for 360 degrees)."""
+    n = lidar_num_horizontal(horizontal_fov_range, horizontal_res)
+    fov = horizontal_fov_range[1] - horizontal_fov_range[0]
+    full = abs(abs(fov) - 360.0) < 1e-6
+    return torch.linspace(horizontal_fov_range[0], horizontal_fov_range[1], n + 1 if full else n)[:n]
+
+
 def lidar_channel_angles(channels: int, vertical_fov_range: tuple[float, float]) -> torch.Tensor:
     """Elevation (degrees) of each channel, in the order the ray caster returns them (as lidar_pattern)."""
     return torch.linspace(vertical_fov_range[0], vertical_fov_range[1], channels)

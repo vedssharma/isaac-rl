@@ -309,3 +309,92 @@ def test_kind_counts_count_a_wall_once():
     counts = of.kind_counts(lay)
     assert counts["wall"] == lay.walls
     assert sum(counts.values()) == lay.placed
+
+
+# -- lidar replay
+
+RING_10 = np.deg2rad(np.linspace(-180.0, 180.0, 37)[:-1])  # the env's 10-degree ring, relative to the heading
+
+
+def analytic_ring(position, yaw, circles, max_range=5.0):
+    """Independent reference: each ray's distance to the nearest of `circles` [(cx, cy, r)], clipped to max_range."""
+    out = np.full(len(RING_10), max_range)
+    for i, off in enumerate(RING_10):
+        u = np.array([math.cos(yaw + off), math.sin(yaw + off)])
+        for cx, cy, r in circles:
+            d = np.array([cx, cy]) - np.asarray(position)
+            along = d @ u
+            perp2 = d @ d - along**2
+            if along > 0 and perp2 <= r * r:
+                out[i] = min(out[i], along - math.sqrt(r * r - perp2))
+    return out
+
+
+def test_ray_hit_distances():
+    cyl = of.Obstacle("cylinder", (2.0, 0.0), radius=0.5)
+    sq = of.Obstacle("box", (2.0, 0.0), half_extents=(0.5, 0.5))
+    origins = np.array([[0.0, 0.0], [2.0, 0.1]])
+    angles = np.array([[0.0, math.pi / 2, math.pi], [0.0, 0.0, 0.0]])
+    d = of.ray_hit_distances(cyl, origins, angles)
+    assert d[0, 0] == pytest.approx(1.5) and np.isinf(d[0, 1]) and np.isinf(d[0, 2])
+    assert np.all(d[1] == 0.0)  # starting inside
+    d = of.ray_hit_distances(sq, origins, angles)
+    assert d[0, 0] == pytest.approx(1.5) and np.isinf(d[0, 1]) and np.isinf(d[0, 2]) and np.all(d[1] == 0.0)
+    # From (1, 1) at -60 degrees: the ray drops to the top face's height (y = 0.5) at x = 1.29, still left of the
+    # square (x >= 1.5), so it hits the left face x = 1.5 instead, at t = 0.5 / cos(60 deg) = 1.0 (y = 0.134).
+    t = of.ray_hit_distances(sq, np.array([[1.0, 1.0]]), np.array([[-math.pi / 3]]))[0, 0]
+    assert t == pytest.approx(1.0)
+    # A rotated box (diamond, corners 0.707 m out): straight at its left corner from the origin.
+    diamond = of.Obstacle("box", (2.0, 0.0), half_extents=(0.5, 0.5), yaw=math.pi / 4)
+    t = of.ray_hit_distances(diamond, np.zeros((1, 2)), np.zeros((1, 1)))[0, 0]
+    assert t == pytest.approx(2.0 - math.sqrt(0.5))
+
+
+def fly_at(circle_target, circles, yaw, speed=3.0, dt=0.02, end_surface=0.07):
+    """Positions flying along +x at the target circle's centre line until end_surface from it, with the ring's
+    readings at each step."""
+    cx, cy, r = circle_target
+    xs = np.arange(0.0, cx - r - end_surface + 1e-9, speed * dt)
+    positions = np.stack([xs, np.full_like(xs, cy)], axis=1)
+    readings = np.stack([analytic_ring(p, yaw, circles) for p in positions])
+    return positions, np.full(len(xs), yaw), readings
+
+
+def test_a_thin_pole_between_rays_is_seen_only_up_close():
+    """Heading 5 degrees, so the 10-degree ring's rays are at +-5 degrees either side of a pole straight ahead. A
+    3 cm pole is first crossed by a ray once its centre is within 0.03 / sin(5 deg) = 0.344 m (surface 0.314 m)."""
+    pole = of.Obstacle("pole", (3.0, 0.0), radius=0.03)
+    pos, yaw, readings = fly_at((3.0, 0.0, 0.03), [(3.0, 0.0, 0.03)], math.radians(5.0))
+    vis = of.obstacle_visibility(pole, pos, yaw, RING_10, readings, max_range=5.0)
+    summary = of.visibility_summary(vis, 0.02)
+    assert summary["never_returned"] == 0.0
+    assert 0.25 <= summary["first_return_dist"] <= 0.3142 + 1e-9
+    assert summary["between_rays_frac"] > 0.85  # almost the whole approach: invisible
+    assert summary["occluded_frac"] == 0.0
+    assert summary["first_return_s"] < 0.1
+
+
+def test_a_thick_cylinder_is_seen_all_the_way():
+    cyl = of.Obstacle("cylinder", (3.0, 0.0), radius=0.5)
+    pos, yaw, readings = fly_at((3.0, 0.0, 0.5), [(3.0, 0.0, 0.5)], math.radians(5.0))
+    vis = of.obstacle_visibility(cyl, pos, yaw, RING_10, readings, max_range=5.0)
+    assert vis["returned"].all()
+    summary = of.visibility_summary(vis, 0.02)
+    assert summary["between_rays_frac"] == 0.0 and summary["first_return_dist"] == pytest.approx(2.5)
+
+
+def test_a_pole_behind_another_obstacle_is_occluded_not_between_rays():
+    pole = of.Obstacle("pole", (3.0, 0.0), radius=0.06)
+    pos = np.zeros((5, 2))
+    readings = np.stack([analytic_ring(p, 0.0, [(3.0, 0.0, 0.06), (1.5, 0.0, 0.2)]) for p in pos])
+    vis = of.obstacle_visibility(pole, pos, np.zeros(5), RING_10, readings, max_range=5.0)
+    assert not vis["returned"].any() and vis["occluded"].all() and not vis["between_rays"].any()
+    assert of.visibility_summary(vis, 0.02)["never_returned"] == 1.0
+
+
+def test_nearest_footprint_returns_the_obstacle():
+    cyl = of.Obstacle("cylinder", (10.0, 5.0), radius=0.3)
+    lay = of.Layout([cyl], 0.5, 1.0, 1, 0, P)
+    kind, d, _, o = of.nearest_footprint(lay, (10.0, 5.5))
+    assert kind == "cylinder" and o is cyl and d == pytest.approx(0.2)
+    assert of.nearest_footprint(lay, (3.0, P.inner_y[0] + 0.05))[3] is None  # side wall

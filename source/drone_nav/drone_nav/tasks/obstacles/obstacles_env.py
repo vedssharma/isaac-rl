@@ -32,6 +32,9 @@ from drone_nav.terrain import obstacle_field as of
 from drone_nav.terrain.obstacle_field import ObstacleFieldParams, spawn_and_goal_regions
 from drone_nav.terrain.obstacle_field_cfg import OBSTACLE_FIELD_GENERATOR_CFG
 
+# of.visibility_summary's fields, logged per obstacle kind as Trace/<kind>_<field>.
+TRACE_METRICS = ("never_returned", "first_return_s", "first_return_dist", "between_rays_frac", "occluded_frac")
+
 # The goal task's observation, which this one extends with the lidar ring.
 GOAL_OBS_DIM = DroneNavGoalCTBREnvCfg().observation_space
 
@@ -114,6 +117,9 @@ class DroneNavObstaclesEnvCfg(DroneNavGoalCTBREnvCfg):
     attribute_collisions: bool = False
     # Warning time = how long the closest horizontal lidar reading had been within this distance before a collision.
     warning_distance: float = 1.0
+    # With attribute_collisions, also replay the last trace_steps steps (1 s at the 50 Hz control rate) of the
+    # horizontal lidar ring against the obstacle hit: was it ever seen, and from how far? Logged as Trace/*.
+    trace_steps: int = 50
 
     rewards: ObstacleRewardWeightsCfg = ObstacleRewardWeightsCfg()
 
@@ -204,23 +210,72 @@ class DroneNavObstaclesEnv(DroneNavGoalEnv):
         self._hit_closing = torch.zeros(n, device=dev)  # speed towards the obstacle hit
         self._hit_warning = torch.zeros(n, device=dev)  # how long something had been within warning_distance
 
+        # Lidar replay: a ring buffer of the horizontal channel's readings, the drone's position and heading, written
+        # every step (all envs at the same slot), and how many valid steps each env has since its reset.
+        k = self.cfg.trace_steps
+        pattern = self.cfg.lidar.pattern_cfg
+        angles = obs_mdp.lidar_horizontal_angles(pattern.horizontal_fov_range, pattern.horizontal_res)
+        self._ray_offsets = np.deg2rad(angles.numpy().astype(np.float64))
+        self._trace_read = torch.zeros(n, k, len(self._ray_offsets), device=dev)
+        self._trace_pos = torch.zeros(n, k, 2, device=dev)
+        self._trace_yaw = torch.zeros(n, k, device=dev)
+        self._trace_len = torch.zeros(n, dtype=torch.long, device=dev)
+        self._trace_ptr = 0
+        # Per collision (nan otherwise): of.visibility_summary of the obstacle hit.
+        self._vis = {name: torch.full((n,), float("nan"), device=dev) for name in TRACE_METRICS}
+
+    def _record_trace(self) -> None:
+        n = self.num_envs
+        horizontal = self._lidar_dist.view(n, self._lidar_channels, -1)[:, self._horizontal_channel]
+        q = self._robot.data.root_quat_w  # (w, x, y, z)
+        yaw = torch.atan2(2.0 * (q[:, 0] * q[:, 3] + q[:, 1] * q[:, 2]), 1.0 - 2.0 * (q[:, 2] ** 2 + q[:, 3] ** 2))
+        self._trace_read[:, self._trace_ptr] = horizontal
+        self._trace_pos[:, self._trace_ptr] = self._robot.data.root_pos_w[:, :2]
+        self._trace_yaw[:, self._trace_ptr] = yaw
+        self._trace_ptr = (self._trace_ptr + 1) % self.cfg.trace_steps
+        self._trace_len = (self._trace_len + 1).clamp(max=self.cfg.trace_steps)
+
     def _attribute(self, ids: torch.Tensor) -> None:
         """Fill the collision buffers for envs `ids`, which just collided."""
         pos = self._robot.data.root_pos_w[ids, :2].cpu().numpy()
         vel = self._robot.data.root_lin_vel_w[ids, :2].cpu().numpy()
         rows = self._episode_level[ids].cpu().numpy()
         cols = self._terrain.terrain_types[ids].cpu().numpy()
+        # The last trace_len steps of each collided env's trace, oldest first (the current step was just recorded).
+        size = self.cfg.trace_steps
+        lengths = self._trace_len[ids].cpu().numpy()
+        trace_read = self._trace_read[ids].cpu().numpy()
+        trace_pos = self._trace_pos[ids].cpu().numpy()
+        trace_yaw = self._trace_yaw[ids].cpu().numpy()
         kinds, dists, closing = [], [], []
+        vis_rows = {name: [] for name in TRACE_METRICS}
         for k in range(len(ids)):
             r, c = int(rows[k]), int(cols[k])
-            p_tile = pos[k] - self._terrain_origins_np[r, c, :2] + self._origin_in_tile
-            kind, dist, nearest = of.nearest_obstacle(self._tile_layouts[(r, c)], p_tile)
+            shift = self._origin_in_tile - self._terrain_origins_np[r, c, :2]  # world -> tile frame
+            p_tile = pos[k] + shift
+            kind, dist, nearest, obstacle = of.nearest_footprint(self._tile_layouts[(r, c)], p_tile)
             to = nearest - p_tile
             norm = float(np.linalg.norm(to))
             kinds.append(of.ATTRIBUTION_KINDS.index(kind))
             dists.append(dist)
             closing.append(float(vel[k] @ to) / norm if norm > 1e-9 else float(np.linalg.norm(vel[k])))
+            summary = dict.fromkeys(TRACE_METRICS, float("nan"))
+            if obstacle is not None and lengths[k] > 0:
+                order = (self._trace_ptr - lengths[k] + np.arange(lengths[k])) % size
+                vis = of.obstacle_visibility(
+                    obstacle,
+                    trace_pos[k, order] + shift,
+                    trace_yaw[k, order],
+                    self._ray_offsets,
+                    trace_read[k, order],
+                    self._max_range,
+                )
+                summary = of.visibility_summary(vis, self.step_dt)
+            for name in TRACE_METRICS:
+                vis_rows[name].append(summary[name])
         dev = self.device
+        for name in TRACE_METRICS:
+            self._vis[name][ids] = torch.tensor(vis_rows[name], dtype=torch.float, device=dev)
         self._hit_kind[ids] = torch.tensor(kinds, dtype=torch.long, device=dev)
         self._hit_dist[ids] = torch.tensor(dists, dtype=torch.float, device=dev)
         self._hit_speed[ids] = torch.linalg.norm(self._robot.data.root_lin_vel_w[ids, :2], dim=1)
@@ -256,8 +311,10 @@ class DroneNavObstaclesEnv(DroneNavGoalEnv):
         speed = torch.linalg.norm(self._robot.data.root_lin_vel_w[:, :2], dim=1)
         self._near_speed_sum += speed * near.float()
         self._near_steps += near.float()
-        if self._tile_layouts is not None and hit.any():
-            self._attribute(hit.nonzero(as_tuple=False).squeeze(-1))
+        if self._tile_layouts is not None:
+            self._record_trace()
+            if hit.any():
+                self._attribute(hit.nonzero(as_tuple=False).squeeze(-1))
         # A collision is a crash: it ends the episode, takes the crash penalty and overrides reaching the goal.
         self._terms["collision"] = hit
         self._terms["goal"] = self._terms["goal"] & ~hit
@@ -305,6 +362,9 @@ class DroneNavObstaclesEnv(DroneNavGoalEnv):
         self._near_steps[env_ids] = 0.0
         if self._tile_layouts is not None:
             self._hit_kind[env_ids] = -1
+            self._trace_len[env_ids] = 0
+            for value in self._vis.values():
+                value[env_ids] = float("nan")
 
     def _sample_goal_offsets(self, n: int) -> torch.Tensor:
         """Anywhere in the tile's goal strip, at the goal task's altitudes."""
@@ -343,3 +403,10 @@ class DroneNavObstaclesEnv(DroneNavGoalEnv):
             log["Collision/closing_speed"] = self._hit_closing[ended][collided]
             log["Collision/warning_time_s"] = self._hit_warning[ended][collided]
             log["Collision/attribution_distance"] = self._hit_dist[ended][collided]
+            # Lidar replay per obstacle kind, over that kind's collisions: never_returned is a rate; the rest are
+            # means over the collisions where they're defined (first_return_* only where the obstacle was seen).
+            for j, name in enumerate(of.KINDS):
+                of_kind = kind == j
+                for metric in TRACE_METRICS:
+                    values = self._vis[metric][ended][of_kind]
+                    log[f"Trace/{name}_{metric}"] = values[~torch.isnan(values)]

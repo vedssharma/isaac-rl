@@ -470,30 +470,39 @@ def _closest_on_segments(p: np.ndarray, a: np.ndarray, b: np.ndarray) -> tuple[f
     return float(d[i]), pts[i]
 
 
-def nearest_obstacle(layout: Layout, point) -> tuple[str, float, np.ndarray]:
-    """(kind, distance, nearest point) of the footprint closest to `point` (x, y in the tile frame). The side walls
-    count as kind "side_wall" (the tile's long edges when there are none). Distance 0 means inside the footprint."""
+def _point_footprint_distance(o: Obstacle, p: np.ndarray) -> tuple[float, np.ndarray]:
+    """Distance from point p to footprint o (0 inside), and the nearest point of o."""
+    if o.is_round:
+        c = np.asarray(o.center, dtype=np.float64)
+        v = p - c
+        n = float(np.linalg.norm(v))
+        return (max(n - o.radius, 0.0), c + v / n * o.radius) if n > 1e-12 else (0.0, p)
+    poly = o.polygon()
+    if _inside_convex(p[None], poly)[0]:
+        return 0.0, p
+    return _closest_on_segments(p, poly, np.roll(poly, -1, axis=0))
+
+
+def nearest_footprint(layout: Layout, point) -> tuple[str, float, np.ndarray, Obstacle | None]:
+    """(kind, distance, nearest point, obstacle) of the footprint closest to `point` (x, y in the tile frame). The
+    side walls count as kind "side_wall", with obstacle None (the tile's long edges when there are no side walls).
+    Distance 0 means inside the footprint."""
     p = np.asarray(point, dtype=np.float64)[:2]
     y0, y1 = layout.params.inner_y
     if p[1] - y0 <= y1 - p[1]:
-        best = ("side_wall", float(p[1] - y0), np.array([p[0], y0]))
+        best = ("side_wall", float(p[1] - y0), np.array([p[0], y0]), None)
     else:
-        best = ("side_wall", float(y1 - p[1]), np.array([p[0], y1]))
+        best = ("side_wall", float(y1 - p[1]), np.array([p[0], y1]), None)
     for o in layout.obstacles:
-        if o.is_round:
-            c = np.asarray(o.center, dtype=np.float64)
-            v = p - c
-            n = float(np.linalg.norm(v))
-            d, q = (max(n - o.radius, 0.0), c + v / n * o.radius) if n > 1e-12 else (0.0, p)
-        else:
-            poly = o.polygon()
-            if _inside_convex(p[None], poly)[0]:
-                d, q = 0.0, p
-            else:
-                d, q = _closest_on_segments(p, poly, np.roll(poly, -1, axis=0))
+        d, q = _point_footprint_distance(o, p)
         if d < best[1]:
-            best = (o.kind, d, q)
+            best = (o.kind, d, q, o)
     return best
+
+
+def nearest_obstacle(layout: Layout, point) -> tuple[str, float, np.ndarray]:
+    """(kind, distance, nearest point): nearest_footprint without the obstacle."""
+    return nearest_footprint(layout, point)[:3]
 
 
 def kind_counts(layout: Layout) -> dict[str, int]:
@@ -503,3 +512,96 @@ def kind_counts(layout: Layout) -> dict[str, int]:
         counts[o.kind] += 1
     counts["wall"] //= 2
     return counts
+
+
+# -- lidar replay (evaluation): did the ring ever see the obstacle a drone hit?
+
+
+def _cross(a: np.ndarray, b: np.ndarray) -> np.ndarray:
+    return a[..., 0] * b[..., 1] - a[..., 1] * b[..., 0]
+
+
+def ray_hit_distances(o: Obstacle, origins: np.ndarray, angles: np.ndarray) -> np.ndarray:
+    """(L, R) distance along each horizontal ray to footprint o: ray r of step l starts at origins[l] (L, 2) and
+    points at world angle angles[l, r] (radians). inf where the ray misses o; 0 where the origin is inside it."""
+    origins = np.asarray(origins, dtype=np.float64)
+    u = np.stack([np.cos(angles), np.sin(angles)], axis=-1)  # (L, R, 2)
+    org = origins[:, None, :]  # (L, 1, 2)
+    if o.is_round:
+        w = org - np.asarray(o.center, dtype=np.float64)
+        b = (u * w).sum(-1)
+        cc = (w * w).sum(-1) - o.radius**2  # < 0: the origin is inside the circle
+        disc = b * b - cc
+        t = -b - np.sqrt(np.maximum(disc, 0.0))
+        t = np.where(cc <= 0.0, 0.0, t)
+        return np.where((disc >= 0.0) & (t >= 0.0), t, np.inf)
+    poly = o.polygon()
+    best = np.full(u.shape[:2], np.inf)
+    for a, e in zip(poly, np.roll(poly, -1, axis=0) - poly):
+        denom = _cross(u, e)
+        ao = a - org
+        with np.errstate(divide="ignore", invalid="ignore"):
+            t = _cross(ao, e) / denom
+            s_ = _cross(ao, u) / denom
+        ok = (np.abs(denom) > 1e-12) & (t >= 0.0) & (s_ >= 0.0) & (s_ <= 1.0)
+        best = np.minimum(best, np.where(ok, t, np.inf))
+    inside = _inside_convex(origins, poly)
+    best[inside] = 0.0
+    return best
+
+
+def obstacle_visibility(
+    o: Obstacle,
+    positions: np.ndarray,
+    yaws: np.ndarray,
+    ray_offsets: np.ndarray,
+    readings: np.ndarray,
+    max_range: float,
+    tol: float = 0.05,
+) -> dict[str, np.ndarray]:
+    """Replay a horizontal lidar trace against one obstacle. positions (L, 2) are the drone's tile-frame positions,
+    yaws (L,) its headings, ray_offsets (R,) the ring's ray angles relative to the heading (radians; the ring
+    follows yaw only), readings (L, R) the distances the ring reported. Per step (L,):
+
+    - surface: the drone's distance to the obstacle's footprint;
+    - returned: some ray reported this obstacle (its reading matches its exact distance to it, within tol);
+    - between_rays: the obstacle is within max_range but no ray's path crosses it at all;
+    - occluded: some ray's path crosses it within max_range, but every such ray reported something closer.
+    """
+    positions = np.asarray(positions, dtype=np.float64)
+    angles = np.asarray(yaws, dtype=np.float64)[:, None] + np.asarray(ray_offsets, dtype=np.float64)[None, :]
+    expected = ray_hit_distances(o, positions, angles)
+    crosses = expected <= max_range
+    returned = (crosses & (np.abs(np.asarray(readings) - expected) <= tol)).any(axis=1)
+    surface = np.array([_point_footprint_distance(o, p)[0] for p in positions])
+    in_range = surface <= max_range
+    return {
+        "surface": surface,
+        "in_range": in_range,
+        "returned": returned,
+        "between_rays": in_range & ~crosses.any(axis=1),
+        "occluded": crosses.any(axis=1) & ~returned,
+    }
+
+
+def visibility_summary(vis: dict[str, np.ndarray], step_dt: float) -> dict[str, float]:
+    """Collision-level numbers from obstacle_visibility over a trace that ends at the collision:
+    never_returned (1/0); first_return_s, how long before the collision a ray first reported the obstacle (capped
+    by the trace length; nan if never); first_return_dist, the drone's distance to it then (nan if never);
+    between_rays_frac and occluded_frac, the share of in-range steps it was missed each way."""
+    returned = vis["returned"]
+    steps = len(returned)
+    in_range = vis["in_range"]
+    if returned.any():
+        first = int(np.argmax(returned))
+        first_s, first_d = (steps - 1 - first) * step_dt, float(vis["surface"][first])
+    else:
+        first_s, first_d = float("nan"), float("nan")
+    n_in = max(int(in_range.sum()), 1)
+    return {
+        "never_returned": float(not returned.any()),
+        "first_return_s": first_s,
+        "first_return_dist": first_d,
+        "between_rays_frac": float(vis["between_rays"].sum() / n_in),
+        "occluded_frac": float(vis["occluded"].sum() / n_in),
+    }
