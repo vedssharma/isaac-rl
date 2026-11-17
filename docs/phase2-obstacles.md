@@ -14,7 +14,9 @@ Status:
   The exit criterion (≥ 90% success, < 5% collisions) is **not met yet**.
 - [x] Proximity-shaping sweep (§6): no effect on level-5 success or collisions. Shaping isn't the bottleneck.
 - [x] No-poles diagnostic (§7): poles cause about a third of level-5 collisions, but most come from other obstacles.
-- [x] 5° lidar ring (§8): removes the pole excess, but overall level-5 collisions stay about 11–12%.
+- [x] 5° lidar ring (§8): overall level-5 collisions stay about 10–12%.
+- [x] Collision attribution (§9): walls and poles cause about two thirds of collisions. Cylinders and boxes are
+  handled well.
 - [ ] Ablations
 
 ## 1. Obstacle terrain
@@ -335,8 +337,10 @@ collisions there, against 83% / 15% for the 10° baseline.
 | Closest pass / mean speed (training maps) | 0.30 m / 3.22 m/s | 0.30 m / 3.29 m/s |
 | Too high (training maps) | 0.1% | 2.5% |
 
-1. **The finer ring does what it was meant to do for poles.** With 5°, removing poles no longer reduces collisions,
-   so poles stop being the special hazard they were at 10°.
+1. ~~**The finer ring does what it was meant to do for poles.**~~ **Corrected by §9:** measured directly, the
+   5° policy hits poles exactly as often as the 10° one (4.1% of episodes each). The no-poles comparison in this
+   table changes the layouts along with the mix, and on 20 tiles that change swamped the effect. It can't isolate
+   one obstacle type; §9's attribution can.
 2. **But the total doesn't fall.** On the training maps with poles, collisions are 11.4% against 12.9%: within noise,
    and far from the 5% target. Collisions with cylinders, boxes and walls are, if anything, a bit higher than the 10°
    policy's (11.2% vs 8.6% without poles). With one seed per ring, that could be policy-to-policy variation.
@@ -360,3 +364,47 @@ measure:
 **Infrastructure fixed along the way:** `launch.py --eval` now passes the training run's `env.`/`agent.`
 overrides to `play.py` (`da6f9ed`). Without that, the 5° checkpoint wouldn't load into the default 10° env. `--eval`
 specs can also hold Hydra lists (`e79e070`).
+
+## 9. Collision attribution
+
+To stop guessing, the env can now attribute each collision to the obstacle it hit (`env.attribute_collisions=True`,
+evaluation only). The terrain function records every layout it builds. `tile_layouts` maps them back to (row,
+column) using Isaac Lab's generation order, and at a collision `nearest_obstacle` finds the footprint the drone is
+closest to, counting the corridor's side walls. Each episode logs which kind it hit and how many of each kind its tile
+had (exposure). Collisions also log the drone's speed, its closing speed on the obstacle, and its warning time (how
+long the closest horizontal lidar reading had been within 1 m). Sanity check: at the moment of collision, drones are
+on average 0.080 m from the attributed footprint, inside the 0.1 m collision radius, so the tile lookup is right.
+
+Both checkpoints, level 5, training maps, 2000 episodes each (233 and 201 collisions):
+
+| Hit | 10° ring: % of episodes | 5° ring: % of episodes | Per tile | 10°: rate per obstacle | 5°: rate per obstacle |
+|---|---:|---:|---:|---:|---:|
+| wall (with a door) | 4.2% | 2.6% | 0.92 | 4.6% | 2.8% |
+| pole | 4.1% | 4.1% | 1.6 | 2.6% | 2.7% |
+| cylinder | 1.8% | 1.8% | 5.3 | 0.34% | 0.34% |
+| box | 1.1% | 1.3% | 3.6 | 0.30% | 0.36% |
+| corridor side wall | 0.3% | 0.1% | | | |
+| **total** | **11.6%** | **10.0%** | | | |
+
+At the collision: speed 3.0 / 3.2 m/s, closing speed 1.7 / 1.5 m/s, warning time 0.41 / 0.39 s (10° / 5°).
+
+1. **Walls and poles cause about two thirds of collisions** (8.3 of 11.6 points at 10°, 6.7 of 10.0 at 5°), though
+   they're only about 2.5 of a level-5 tile's 11.5 obstacles. Per obstacle, each is 8–15× as dangerous as a cylinder
+   or box.
+2. **Cylinders and boxes, most of the clutter, are handled well**, at about 0.3% per obstacle with either ring.
+3. **The 5° ring doesn't help with poles** (4.1% both), which corrects §8. The only difference is walls (4.2% →
+   2.6%), on one seed per ring.
+4. **Collisions happen at full cruise speed**, 3.0–3.2 m/s, with only about 0.4 s between something coming within
+   1 m and the crash. The policy doesn't slow down for the hard cases.
+
+What walls and poles have in common: both are thin in the direction the drone meets them. A pole is 6–12 cm across.
+A wall's door edges are its 0.2 m-thick ends, which the drone has to pass within about half a metre of to get
+through a 1.2 m door. Both also need a late, sharp correction at 3 m/s. Two things to try next:
+
+- **Slow down near obstacles.** Lower `speed_limit` (for example 2 m/s), or tie the speed penalty to the closest
+  lidar reading. That buys reaction time for exactly these cases, at some cost in time to goal.
+- **Look at wall collisions directly.** A video of a few would show whether they happen at the door edges or
+  because the drone misses the door. A finer attribution could also split segment ends from faces.
+
+The held-out set is also still 20 layouts per evaluation (§6); any decision-making run should cover all three test
+seeds.
