@@ -615,3 +615,17 @@ on the 60 held-out level-5 layouts, 2000 episodes; it reproduces §10.1 exactly 
 2. **Then poles, with the frame fixed:** the 5° ring again, or memory (a GRU, PLAN.md Phase 3), so a pole that
    drops between rays isn't forgotten. The teacher may also use privileged geometry directly (PLAN.md §4.2's "K
    nearest obstacles" option).
+
+## 12. A ring that turns with the drone (not run yet)
+
+§11 found that the lidar ring is fixed in the world. `env.lidar_follows_yaw=True` (commit `5c9bb93`) makes it
+follow the drone's heading instead. Before every read, the env turns the pattern's ray directions by each drone's
+yaw (`yaw_rotate`), writes them into the sensor's per-env `ray_directions`, and forces a recompute. The ring stays
+level, and the lidar observation then shares the body-yaw frame of the goal and velocities. The observation size is
+unchanged (126). The flag is off by default, so every earlier run reproduces, and it needs
+`ray_alignment="yaw"`. CPU tests check that a ray at pattern angle θ on heading ψ points at world bearing θ + ψ.
+
+**Planned run:** `p2-slow-yawring-s42`, the mild slowdown (`slow_distance=1.0`, `near_speed_limit=1.5`) plus
+`lidar_follows_yaw=True`, seed 42, evaluated on the 60 held-out level-5 layouts with attribution and the lidar
+replay on. That makes it directly comparable with §10's seed-42 mild slowdown (89.8% / 10.2%, poles 5.4%) and §11's
+replay. If it helps, seeds 1 and 2 next, then poles (5° ring or memory) on top.
