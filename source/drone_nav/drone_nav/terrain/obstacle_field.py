@@ -605,3 +605,46 @@ def visibility_summary(vis: dict[str, np.ndarray], step_dt: float) -> dict[str, 
         "between_rays_frac": float(vis["between_rays"].sum() / n_in),
         "occluded_frac": float(vis["occluded"].sum() / n_in),
     }
+
+
+# -- privileged observation: every tile's footprints as padded arrays
+
+
+def layout_footprints(layout: Layout) -> list[Obstacle]:
+    """The layout's obstacles plus the corridor's side walls (as two boxes inside the tile), when it has them."""
+    p = layout.params
+    out = list(layout.obstacles)
+    if p.side_walls:
+        L, W, t = p.size[0], p.size[1], p.side_wall_thickness
+        out += [
+            Obstacle("side_wall", (L / 2, t / 2), half_extents=(L / 2, t / 2)),
+            Obstacle("side_wall", (L / 2, W - t / 2), half_extents=(L / 2, t / 2)),
+        ]
+    return out
+
+
+def pack_tiles(
+    tiles: dict[tuple[int, int], Layout], num_rows: int, num_cols: int, min_slots: int = 0
+) -> dict[str, np.ndarray]:
+    """Every tile's footprints (layout_footprints) as arrays of shape (num_rows, num_cols, m, ...), padded to the
+    largest tile (and to at least min_slots): centers (.., 2), radii, half_extents (.., 2), yaws, is_round, valid.
+    Tile frame."""
+    m = max(min_slots, max(len(layout_footprints(lay)) for lay in tiles.values()))
+    shape = (num_rows, num_cols, m)
+    packed = {
+        "centers": np.zeros((*shape, 2), dtype=np.float32),
+        "radii": np.zeros(shape, dtype=np.float32),
+        "half_extents": np.zeros((*shape, 2), dtype=np.float32),
+        "yaws": np.zeros(shape, dtype=np.float32),
+        "is_round": np.zeros(shape, dtype=bool),
+        "valid": np.zeros(shape, dtype=bool),
+    }
+    for (r, c), layout in tiles.items():
+        for i, o in enumerate(layout_footprints(layout)):
+            packed["centers"][r, c, i] = o.center
+            packed["radii"][r, c, i] = o.radius
+            packed["half_extents"][r, c, i] = o.half_extents
+            packed["yaws"][r, c, i] = o.yaw
+            packed["is_round"][r, c, i] = o.is_round
+            packed["valid"][r, c, i] = True
+    return packed

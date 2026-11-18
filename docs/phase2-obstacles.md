@@ -25,6 +25,8 @@ Status:
   impact. It also found the ring is world-fixed, not yaw-following (a bug in our assumptions about Isaac Lab).
 - [x] Ring that follows the drone's yaw (§12): no improvement on one seed (84.6% / 14.6% against 89.8% / 10.2%).
   The world-fixed ring stays.
+- [x] Privileged nearest-obstacle observation (§13): poles 5.4% → 4.5%, overall a wash (89.3% / 8.8%). Pole
+  collisions aren't mainly about sensing or information.
 - [ ] Ablations
 
 ## 1. Obstacle terrain
@@ -666,3 +668,78 @@ the same settings with the world-fixed ring
 **Decision:** keep `lidar_follows_yaw` off (the default). The world-fixed ring stays the baseline. For poles, the
 next candidates are memory (a GRU policy) or giving the privileged teacher the nearest obstacles' geometry directly
 (PLAN.md §4.2).
+
+## 13. Privileged nearest-obstacle observation
+
+§11–12 left poles looking like a sensing problem: they fall between rays and are first seen late. To test that
+directly, the teacher can now be given exact obstacle geometry (PLAN.md §4.2's "K nearest obstacles" option).
+`env.nearest_obstacles_obs=K` (commit `b9871a8`) packs every tile's footprints, including the side walls, into GPU
+tensors from the recorded layouts. Each step it computes every drone's exact distance and nearest point to them
+(`footprint_distances`), and appends, for the K closest, the unit direction in the body-yaw frame and distance /
+5 m. That's 3K inputs after the lidar, which stays. The flag is off by default. Tests cross-check the torch distances
+against the numpy footprint geometry on real layouts, every kind of footprint, points inside included. With K = 4
+the policy has 138 inputs and training speed is unchanged (0.37 s per iteration).
+
+`p2-slow-nearest4-s42` ([lnb0fe9q](https://forge.coreweave.com/wandb/vedssharma1/isaac-rl/runs/lnb0fe9q)): the mild
+slowdown plus K = 4, seed 42, against the same run without it ([mh19cygo](https://forge.coreweave.com/wandb/vedssharma1/isaac-rl/runs/mh19cygo)):
+
+| | Mild slowdown | + 4 nearest obstacles |
+|---|---:|---:|
+| Training at iteration 1000: success / collisions (envs on level 9) | 64% / 25% (57%) | 85% / 10% (68%) |
+| End of training: success / collisions (envs on level 9) | 87.3% / 10.3% (84%) | 87.5% / 9.4% (90%) |
+| **Held-out level 5 (60 layouts): success / collisions** | **89.8% / 10.2%** | **89.3% / 8.8%** |
+| … poles / cylinders / walls / boxes / side walls | 5.4 / 2.2 / 1.5 / 1.0 / 0.1% | 4.5 / 2.4 / 0.9 / 0.8 / 0.2% |
+| Time-out / flipped | 0 / 0% | 1.4 / 0.5% |
+| Closest pass / speed near obstacles / time to goal | 0.34 m / 2.75 m/s / 8.2 s | 0.36 m / 2.70 m/s / 8.3 s |
+
+1. **Exact obstacle positions barely move pole collisions:** 5.4% → 4.5%, with the pole's position in the
+   observation every step whenever it's among the 4 nearest. So pole collisions aren't mainly a sensing problem
+   either. Given perfect information, the policy still passes poles close enough to come within 0.1 m of their
+   surface.
+2. Overall it's a wash on one seed. Collisions fall 1.4 points (poles and walls), but time-outs (1.4%) and flips
+   (0.5%) appear for the first time, so success is unchanged. The observation does speed up learning: the best
+   mid-training numbers of any run, and the most envs on level 9 at the end.
+3. The exit criterion is still not met (8.8% collisions against < 5%; 89.3% success against ≥ 90%).
+
+**What's left for poles**, now that both sensing (§8, §11–12) and information (this section) have been ruled out
+as the main cause, is how the drone passes them:
+
+- **Near misses:** the collision rule fires when anything comes within 0.1 m of the drone's centre, and prop tips
+  are at about 0.07 m. A 3–6 cm pole passed at 7–10 cm counts as a hit. An evaluation that records each pole hit's
+  closest approach and heading relative to the pole would show whether these are genuine head-on hits or grazes.
+- **Clearance pressure:** the proximity term is weak for thin obstacles (−1 × exp(−clearance / 0.3 m) per second
+  for a brief pass). Shaping that's stronger near the collision radius, or a slightly larger margin in training
+  than in evaluation, would push the policy to give poles more room.
+- **Control limits at speed:** a late sideways correction at 2.7 m/s within CTBR's rate limits may simply not be
+  possible. Lower speed near poles specifically, rather than everywhere, would test that.
+
+## 14. Why some runs cost twice as much: Kit's shutdown hangs
+
+The last two runs cost $2.45 and $2.96 against about $1 before, almost all of it idle box time. Timing every
+launch from three clocks (`run_remote`'s start stamp; the Hugging Face commit each script makes as its last real
+step; and the launcher's local log) shows where it goes:
+
+| Run | Training: HF upload → process exit | Evaluation: HF upload → process exit |
+|---|---:|---:|
+| 6 runs on 2026-11-17 (slowdown s1/s2, baseline s1/s2, trace evaluations) | 5–40 s | 5–40 s |
+| `p2-slow-yawring-s42` | 7.6 min | 21 min |
+| `p2-slow-nearest4-s42` | 13.7 min | 37 min |
+
+The training and evaluation work itself was quick: 2000 evaluation episodes take about 40 s on a warm box. On
+some boxes, though, the process didn't exit for 8–37 minutes after it had saved everything, at the end of both
+training and evaluation. After the upload, the only thing left is `simulation_app.close()`, Kit's shutdown. No ssh
+failures were logged, so the launcher was polling normally; the remote `exit_code` file just wasn't written until
+the process ended, and the box billed the whole time. It happened on Nebius and Crusoe alike, and with the lidar
+replay off (training), so it isn't the provider or that code. It looks like a nondeterministic hang in Kit's
+shutdown.
+
+**Fix** (`scripts/kit_exit.py`): `train.py` and `play.py` now end with `kit_exit.close_app(simulation_app)`. It
+closes Kit normally, but if that hasn't finished within 60 s it prints `[WARN] Kit shutdown still running after
+60 s; exiting without it` and exits with code 0. Code 0 is correct: the checkpoint, W&B summary, HF upload and
+results JSON are all written before this point. Tests check both paths, a hung close and a normal one, in a
+subprocess. Limitation: if the hang holds Python's interpreter lock in native code, the watchdog thread can't
+run, and `run_remote.sh`'s outer `timeout` remains the backstop. The warning line in a future run's log will show
+the watchdog doing its job.
+
+One stall isn't explained by this. On 2026-11-16, an evaluation that crashed at start-up (exiting through
+`os._exit`, not Kit's shutdown) still took the launcher 18 minutes to notice. Worth watching for.

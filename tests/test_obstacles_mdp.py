@@ -156,3 +156,40 @@ def test_yaw_rotate_turns_each_ray_by_the_heading():
     torch.testing.assert_close(bearing, expected)
     torch.testing.assert_close(out[..., 2], dirs[None, :, 2].expand(3, -1))
     torch.testing.assert_close(out.norm(dim=-1), torch.ones(3, len(theta)))
+
+
+def test_footprint_distances_match_the_numpy_geometry():
+    """The GPU distances must agree with obstacle_field's own footprint geometry, on real layouts (cylinders, poles,
+    rotated boxes, walls and side walls) at random points, including points inside footprints."""
+    import numpy as np
+    from drone_nav.terrain import obstacle_field as of
+
+    p = of.ObstacleFieldParams()
+    tiles = {(0, i): of.generate_layout(p, d, of.layout_rng(i, d)) for i, d in enumerate((0.35, 0.65, 0.95))}
+    packed = {k: torch.as_tensor(v) for k, v in of.pack_tiles(tiles, 1, 3).items()}
+    rng = np.random.default_rng(0)
+    for (_, col), layout in tiles.items():
+        pts = np.stack([rng.uniform(0, p.size[0], 300), rng.uniform(0, p.size[1], 300)], axis=1)
+        footprints = of.layout_footprints(layout)
+        tile = {k: v[0, col][None].expand(len(pts), *v[0, col].shape) for k, v in packed.items()}
+        dist, nearest = mdp.footprint_distances(torch.as_tensor(pts, dtype=torch.float32), **tile)
+        for j, pt in enumerate(pts):
+            for i, o in enumerate(footprints):
+                d_ref, q_ref = of._point_footprint_distance(o, pt)
+                assert abs(dist[j, i].item() - d_ref) < 1e-4, (o, pt)
+                if d_ref > 1e-6:
+                    assert np.allclose(nearest[j, i].numpy(), q_ref, atol=1e-4)
+            assert torch.isinf(dist[j, len(footprints):]).all()  # padding
+
+
+def test_nearest_obstacle_observation():
+    point = torch.tensor([[0.0, 0.0]])
+    dist = torch.tensor([[2.0, 0.5, float("inf"), 6.0]])
+    nearest = torch.tensor([[[2.0, 0.0], [0.0, 0.5], [0.0, 0.0], [6.0, 0.0]]])
+    obs = mdp.nearest_obstacle_observation(point, torch.tensor([math.pi / 2]), dist, nearest, k=3, max_range=5.0)
+    assert obs.shape == (1, 9)
+    # Closest first: (0, 0.5) is straight ahead for a drone facing +y; (2, 0) is to its right (body -y).
+    torch.testing.assert_close(obs[0, 0:3], torch.tensor([1.0, 0.0, 0.1]), atol=1e-6, rtol=0)
+    torch.testing.assert_close(obs[0, 3:6], torch.tensor([0.0, -1.0, 0.4]), atol=1e-6, rtol=0)
+    # The third closest is 6 m away, beyond max_range: reads as "nothing there".
+    torch.testing.assert_close(obs[0, 6:9], torch.tensor([0.0, 0.0, 1.0]))

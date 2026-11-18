@@ -96,6 +96,10 @@ class DroneNavObstaclesEnvCfg(DroneNavGoalCTBREnvCfg):
     # the pattern's ray directions are turned by each drone's yaw. The lidar observation then shares the body frame
     # of the goal and velocities. Off by default, so runs before 2026-11-17 reproduce (docs/phase2-obstacles.md §12).
     lidar_follows_yaw: bool = False
+    # Privileged observation of the K nearest obstacle footprints (PLAN.md §4.2's "K nearest obstacles"), from the
+    # tiles' exact layouts: per obstacle, the unit direction to its nearest point in the body-yaw frame and its
+    # distance / lidar range, 3K inputs appended after the lidar. 0 (the default) turns it off (§13).
+    nearest_obstacles_obs: int = 0
 
     # Collision when an obstacle is this close to the drone's centre, horizontally. Crazyflie 2.x prop tips are
     # about 0.07 m out; 0.1 m is also the disk the terrain generator guarantees a path for.
@@ -143,7 +147,7 @@ class DroneNavObstaclesEnv(DroneNavGoalEnv):
         self._lidar_channels = pattern.channels
         self._horizontal_channel = obs_mdp.horizontal_channel(pattern.channels, pattern.vertical_fov_range)
         n_rays = pattern.channels * obs_mdp.lidar_num_horizontal(pattern.horizontal_fov_range, pattern.horizontal_res)
-        cfg.observation_space = GOAL_OBS_DIM + n_rays
+        cfg.observation_space = GOAL_OBS_DIM + n_rays + 3 * cfg.nearest_obstacles_obs
 
         if cfg.lidar_follows_yaw and cfg.lidar.ray_alignment != "yaw":
             raise ValueError("lidar_follows_yaw turns the ray directions itself; it needs lidar.ray_alignment='yaw'")
@@ -203,17 +207,41 @@ class DroneNavObstaclesEnv(DroneNavGoalEnv):
         self._near_speed_sum = torch.zeros(n, device=dev)
         self._near_steps = torch.zeros(n, device=dev)
         self._tile_layouts = None
+        self._layouts_cache = None
+        self._origin_in_tile = of.terrain_origin(self._tile_params)[:2]
         if self.cfg.attribute_collisions:
             self._setup_attribution()
+        if self.cfg.nearest_obstacles_obs > 0:
+            rows, cols = self._terrain.terrain_origins.shape[:2]
+            packed = of.pack_tiles(self._layouts(), rows, cols, min_slots=self.cfg.nearest_obstacles_obs)
+            self._footprints = {k: torch.as_tensor(v, device=dev) for k, v in packed.items()}
+            self._origin_in_tile_t = torch.tensor(self._origin_in_tile, dtype=torch.float, device=dev)
+
+    def _layouts(self) -> dict:
+        """{(row, col): layout} for every tile, as the terrain function recorded them while Isaac Lab built them."""
+        if self._layouts_cache is None:
+            rows, cols = self._terrain.terrain_origins.shape[:2]
+            self._layouts_cache = of.tile_layouts(of.GENERATED_LAYOUTS, rows, cols)
+        return self._layouts_cache
+
+    def _nearest_obstacles(self) -> torch.Tensor:
+        """(n, 3K) privileged nearest-obstacle observation for each env's current tile and position."""
+        t = self._terrain
+        tile = {k: v[t.terrain_levels, t.terrain_types] for k, v in self._footprints.items()}
+        point = self._robot.data.root_pos_w[:, :2] - t.env_origins[:, :2] + self._origin_in_tile_t
+        dist, nearest = obs_mdp.footprint_distances(point, **tile)
+        yaw = obs_mdp.yaw_from_quat(self._robot.data.root_quat_w)
+        return obs_mdp.nearest_obstacle_observation(
+            point, yaw, dist, nearest, self.cfg.nearest_obstacles_obs, self._max_range
+        )
 
     def _setup_attribution(self):
         """Look up every tile's layout (the terrain function recorded them as Isaac Lab built the tiles), and keep
         per-env buffers describing the collision that ended the current episode, if any."""
         n, dev = self.num_envs, self.device
         rows, cols = self._terrain.terrain_origins.shape[:2]
-        self._tile_layouts = of.tile_layouts(of.GENERATED_LAYOUTS, rows, cols)
+        self._tile_layouts = self._layouts()
         self._terrain_origins_np = self._terrain.terrain_origins.cpu().numpy()
-        self._origin_in_tile = of.terrain_origin(self._tile_params)[:2]
         counts = torch.zeros(rows, cols, len(of.KINDS))
         for (r, c), layout in self._tile_layouts.items():
             kc = of.kind_counts(layout)
@@ -320,7 +348,10 @@ class DroneNavObstaclesEnv(DroneNavGoalEnv):
         obs = super()._get_observations()["policy"]
         # Read again rather than reuse _get_dones' reading: envs that just reset have moved since.
         lidar = obs_mdp.lidar_observation(self._read_lidar(), self._max_range)
-        return {"policy": torch.cat([obs, lidar], dim=-1)}
+        parts = [obs, lidar]
+        if self.cfg.nearest_obstacles_obs > 0:
+            parts.append(self._nearest_obstacles())
+        return {"policy": torch.cat(parts, dim=-1)}
 
     def _get_dones(self) -> tuple[torch.Tensor, torch.Tensor]:
         terminated, time_out = super()._get_dones()

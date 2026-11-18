@@ -122,3 +122,57 @@ def yaw_rotate(directions: torch.Tensor, yaw: torch.Tensor) -> torch.Tensor:
     c, s = torch.cos(yaw)[:, None], torch.sin(yaw)[:, None]
     x, y, z = directions[None, :, 0], directions[None, :, 1], directions[None, :, 2]
     return torch.stack([c * x - s * y, s * x + c * y, z.expand_as(c * x)], dim=-1)
+
+
+def footprint_distances(
+    point: torch.Tensor,
+    centers: torch.Tensor,
+    radii: torch.Tensor,
+    half_extents: torch.Tensor,
+    yaws: torch.Tensor,
+    is_round: torch.Tensor,
+    valid: torch.Tensor,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Exact distance from each env's point (n, 2) to each of its m obstacle footprints, and the footprint's nearest
+    point: (n, m) and (n, m, 2). Footprints are circles (is_round: centers, radii) or rotated rectangles (centers,
+    half_extents (n, m, 2), yaws). 0 inside a footprint; inf where valid is False (padding)."""
+    rel = point[:, None, :] - centers  # (n, m, 2)
+    # Circles.
+    norm = rel.norm(dim=-1).clamp(min=1e-9)
+    d_round = (norm - radii).clamp(min=0.0)
+    q_round = centers + rel / norm[..., None] * radii[..., None]
+    q_round = torch.where((norm > radii)[..., None], q_round, point[:, None, :].expand_as(q_round))
+    # Rectangles: into the box frame, clamp to the box, back out.
+    c, s = torch.cos(yaws), torch.sin(yaws)
+    local = torch.stack([c * rel[..., 0] + s * rel[..., 1], -s * rel[..., 0] + c * rel[..., 1]], dim=-1)
+    clamped = torch.maximum(torch.minimum(local, half_extents), -half_extents)
+    d_box = (local - clamped).norm(dim=-1)
+    q_box = centers + torch.stack(
+        [c * clamped[..., 0] - s * clamped[..., 1], s * clamped[..., 0] + c * clamped[..., 1]], dim=-1
+    )
+    dist = torch.where(is_round, d_round, d_box)
+    nearest = torch.where(is_round[..., None], q_round, q_box)
+    return torch.where(valid, dist, torch.full_like(dist, float("inf"))), nearest
+
+
+def nearest_obstacle_observation(
+    point: torch.Tensor,
+    yaw: torch.Tensor,
+    dist: torch.Tensor,
+    nearest: torch.Tensor,
+    k: int,
+    max_range: float,
+) -> torch.Tensor:
+    """(n, 3k) privileged observation of the k closest footprints (PLAN.md §4.2's "K nearest obstacles"): for each,
+    the unit direction to its nearest point in the drone's body-yaw frame (2), then distance / max_range clipped to 1
+    (1). Closest first. A footprint beyond max_range (or padding) reads as direction (0, 0), distance 1."""
+    d, idx = torch.topk(dist, k, dim=1, largest=False)
+    q = torch.gather(nearest, 1, idx[..., None].expand(-1, -1, 2))
+    vec = q - point[:, None, :]
+    c, s = torch.cos(yaw)[:, None], torch.sin(yaw)[:, None]
+    body = torch.stack([c * vec[..., 0] + s * vec[..., 1], -s * vec[..., 0] + c * vec[..., 1]], dim=-1)
+    unit = body / body.norm(dim=-1, keepdim=True).clamp(min=1e-6)
+    far = ~(d < max_range)  # also catches inf (padding)
+    unit = torch.where(far[..., None], torch.zeros_like(unit), unit)
+    scaled = torch.where(far, torch.ones_like(d), d / max_range)
+    return torch.cat([unit, scaled[..., None]], dim=-1).reshape(point.shape[0], 3 * k)
