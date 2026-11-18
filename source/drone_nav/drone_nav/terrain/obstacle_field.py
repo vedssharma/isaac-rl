@@ -607,6 +607,65 @@ def visibility_summary(vis: dict[str, np.ndarray], step_dt: float) -> dict[str, 
     }
 
 
+# -- near misses (evaluation): how did the drone meet the obstacle it hit?
+
+# Times before a collision at which near_miss_summary reports straight_line_miss.
+NEAR_MISS_TIMES_MS = (0, 250, 500)
+NEAR_MISS_METRICS = ("radius", "speed", "approach_deg", *(f"line_miss_{t}ms" for t in NEAR_MISS_TIMES_MS))
+
+
+def straight_line_miss(o: Obstacle, positions: np.ndarray, velocities: np.ndarray) -> np.ndarray:
+    """(L,) how far the drone's centre would pass from round footprint o's surface if it flew on in a straight line
+    from positions[l] (L, 2) along velocities[l] (L, 2): the half-line's closest approach to o's centre, minus the
+    radius. Negative when the line goes through the obstacle (-radius: straight through its centre). A drone that's
+    moving away from o (or hovering) passes closest where it is now."""
+    if not o.is_round:
+        raise ValueError(f"straight_line_miss needs a round footprint, not a {o.kind}")
+    positions = np.asarray(positions, dtype=np.float64)
+    velocities = np.asarray(velocities, dtype=np.float64)
+    w = np.asarray(o.center, dtype=np.float64) - positions  # (L, 2) drone -> centre
+    speed = np.linalg.norm(velocities, axis=-1)
+    u = velocities / np.maximum(speed, 1e-9)[:, None]
+    along = (w * u).sum(-1)
+    perp = np.abs(_cross(u, w))
+    closest = np.where((along > 0.0) & (speed > 1e-6), perp, np.linalg.norm(w, axis=-1))
+    return closest - o.radius
+
+
+def near_miss_summary(
+    o: Obstacle, positions: np.ndarray, velocities: np.ndarray, step_dt: float
+) -> dict[str, float]:
+    """Collision-level numbers for the obstacle o a drone hit, from its trace: tile-frame positions (L, 2) and
+    horizontal velocities (L, 2), oldest first, ending at the collision step.
+
+    - radius: o's radius (nan unless round);
+    - speed: horizontal speed at the collision;
+    - approach_deg: angle between the velocity and the direction to o's nearest point at the collision (0: flying
+      straight at it; 90: moving along its surface);
+    - line_miss_<t>ms: straight_line_miss t ms before the collision (nan unless round, or if the trace is
+      shorter than that).
+    """
+    positions = np.asarray(positions, dtype=np.float64)
+    velocities = np.asarray(velocities, dtype=np.float64)
+    out = dict.fromkeys(NEAR_MISS_METRICS, float("nan"))
+    v = velocities[-1]
+    speed = float(np.linalg.norm(v))
+    out["speed"] = speed
+    _, q = _point_footprint_distance(o, positions[-1])
+    to = q - positions[-1]
+    if speed > 1e-6 and np.linalg.norm(to) > 1e-9:
+        cos = float(v @ to) / (speed * float(np.linalg.norm(to)))
+        out["approach_deg"] = math.degrees(math.acos(min(max(cos, -1.0), 1.0)))
+    if o.is_round:
+        out["radius"] = o.radius
+        miss = straight_line_miss(o, positions, velocities)
+        for t in NEAR_MISS_TIMES_MS:
+            back = round(t / 1000.0 / step_dt)
+            if back < len(positions):
+                out[f"line_miss_{t}ms"] = float(miss[len(positions) - 1 - back])
+    return out
+
+
 # -- privileged observation: every tile's footprints as padded arrays
 
 
@@ -648,3 +707,13 @@ def pack_tiles(
             packed["is_round"][r, c, i] = o.is_round
             packed["valid"][r, c, i] = True
     return packed
+
+
+def pack_tile_kinds(tiles: dict[tuple[int, int], Layout], num_rows: int, num_cols: int, slots: int) -> np.ndarray:
+    """(num_rows, num_cols, slots) index into ATTRIBUTION_KINDS of each footprint, in pack_tiles' order (pass its
+    slot count); -1 for padding."""
+    kinds = np.full((num_rows, num_cols, slots), -1, dtype=np.int64)
+    for (r, c), layout in tiles.items():
+        for i, o in enumerate(layout_footprints(layout)):
+            kinds[r, c, i] = ATTRIBUTION_KINDS.index(o.kind)
+    return kinds

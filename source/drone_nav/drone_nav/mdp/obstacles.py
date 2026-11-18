@@ -176,3 +176,10 @@ def nearest_obstacle_observation(
     unit = torch.where(far[..., None], torch.zeros_like(unit), unit)
     scaled = torch.where(far, torch.ones_like(d), d / max_range)
     return torch.cat([unit, scaled[..., None]], dim=-1).reshape(point.shape[0], 3 * k)
+
+
+def closest_by_kind(dist: torch.Tensor, kinds: torch.Tensor, num_kinds: int) -> torch.Tensor:
+    """(n, num_kinds) each env's distance to its closest footprint of each kind, from footprint_distances' (n, m)
+    distances and the footprints' kind indices (n, m) (-1 for padding). inf where an env's tile has none."""
+    match = kinds[..., None] == torch.arange(num_kinds, device=kinds.device)  # (n, m, k)
+    return torch.where(match, dist[..., None], torch.full_like(match, float("inf"), dtype=dist.dtype)).amin(dim=1)

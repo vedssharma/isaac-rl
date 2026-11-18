@@ -133,6 +133,8 @@ def summarize(logs: dict[str, list[torch.Tensor]], n_target: int) -> dict:
             out[key] = {"rate": p, "ci95": [lo, hi]}
         else:
             out[key] = {"mean": values.mean().item() if len(values) else float("nan"), "n": len(values)}
+            if key.startswith("NearMiss/"):  # distributions, not only means (docs/phase2-obstacles.md §15)
+                out[key]["values"] = [round(v, 4) for v in values.tolist()]
     return out
 
 
