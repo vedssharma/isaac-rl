@@ -33,6 +33,7 @@ from isaaclab.app import AppLauncher
 
 # local imports
 import cli_args  # isort: skip
+import kit_exit  # isort: skip
 
 parser = argparse.ArgumentParser(description="Evaluate an RL agent trained with RSL-RL.")
 parser.add_argument("--task", type=str, required=True, help="Name of the task.")
@@ -265,4 +266,4 @@ if __name__ == "__main__":
             traceback.print_exc()
         if code not in (0, None):
             os._exit(code if isinstance(code, int) else 1)
-    simulation_app.close()
+    kit_exit.close_app(simulation_app)

@@ -712,3 +712,34 @@ as the main cause, is how the drone passes them:
   than in evaluation, would push the policy to give poles more room.
 - **Control limits at speed:** a late sideways correction at 2.7 m/s within CTBR's rate limits may simply not be
   possible. Lower speed near poles specifically, rather than everywhere, would test that.
+
+## 14. Why some runs cost twice as much: Kit's shutdown hangs
+
+The last two runs cost $2.45 and $2.96 against about $1 before, almost all of it idle box time. Timing every
+launch from three clocks (`run_remote`'s start stamp; the Hugging Face commit each script makes as its last real
+step; and the launcher's local log) shows where it goes:
+
+| Run | Training: HF upload → process exit | Evaluation: HF upload → process exit |
+|---|---:|---:|
+| 6 runs on 2026-11-17 (slowdown s1/s2, baseline s1/s2, trace evaluations) | 5–40 s | 5–40 s |
+| `p2-slow-yawring-s42` | 7.6 min | 21 min |
+| `p2-slow-nearest4-s42` | 13.7 min | 37 min |
+
+The training and evaluation work itself was quick: 2000 evaluation episodes take about 40 s on a warm box. On
+some boxes, though, the process didn't exit for 8–37 minutes after it had saved everything, at the end of both
+training and evaluation. After the upload, the only thing left is `simulation_app.close()`, Kit's shutdown. No ssh
+failures were logged, so the launcher was polling normally; the remote `exit_code` file just wasn't written until
+the process ended, and the box billed the whole time. It happened on Nebius and Crusoe alike, and with the lidar
+replay off (training), so it isn't the provider or that code. It looks like a nondeterministic hang in Kit's
+shutdown.
+
+**Fix** (`scripts/kit_exit.py`): `train.py` and `play.py` now end with `kit_exit.close_app(simulation_app)`. It
+closes Kit normally, but if that hasn't finished within 60 s it prints `[WARN] Kit shutdown still running after
+60 s; exiting without it` and exits with code 0. Code 0 is correct: the checkpoint, W&B summary, HF upload and
+results JSON are all written before this point. Tests check both paths, a hung close and a normal one, in a
+subprocess. Limitation: if the hang holds Python's interpreter lock in native code, the watchdog thread can't
+run, and `run_remote.sh`'s outer `timeout` remains the backstop. The warning line in a future run's log will show
+the watchdog doing its job.
+
+One stall isn't explained by this. On 2026-11-16, an evaluation that crashed at start-up (exiting through
+`os._exit`, not Kit's shutdown) still took the launcher 18 minutes to notice. Worth watching for.

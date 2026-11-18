@@ -39,6 +39,7 @@ from isaaclab.app import AppLauncher
 
 # local imports
 import cli_args  # isort: skip
+import kit_exit  # isort: skip
 
 ORIG_ARGV = list(sys.argv)
 
@@ -428,4 +429,4 @@ if __name__ == "__main__":
             # Exit now with the error code: Kit's shutdown hard-exits the process and may not keep it.
             os._exit(code if isinstance(code, int) else 1)
     # close sim app
-    simulation_app.close()
+    kit_exit.close_app(simulation_app)
