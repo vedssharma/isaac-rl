@@ -151,7 +151,10 @@ class DroneNavObstaclesEnv(DroneNavGoalEnv):
         self._lidar_channels = pattern.channels
         self._horizontal_channel = obs_mdp.horizontal_channel(pattern.channels, pattern.vertical_fov_range)
         n_rays = pattern.channels * obs_mdp.lidar_num_horizontal(pattern.horizontal_fov_range, pattern.horizontal_res)
-        cfg.observation_space = GOAL_OBS_DIM + n_rays + 3 * cfg.nearest_obstacles_obs
+        # This task's observation: the goal task's, the lidar ring and the nearest obstacles. Subclasses with a
+        # different policy observation (the Phase 3 depth student) keep it as "teacher" and set their own size.
+        self._privileged_obs_dim = GOAL_OBS_DIM + n_rays + 3 * cfg.nearest_obstacles_obs
+        cfg.observation_space = self._policy_obs_dim(cfg)
 
         if cfg.lidar_follows_yaw and cfg.lidar.ray_alignment != "yaw":
             raise ValueError("lidar_follows_yaw turns the ray directions itself; it needs lidar.ray_alignment='yaw'")
@@ -220,6 +223,10 @@ class DroneNavObstaclesEnv(DroneNavGoalEnv):
             rows, cols = self._terrain.terrain_origins.shape[:2]
             packed = of.pack_tiles(self._layouts(), rows, cols, min_slots=self.cfg.nearest_obstacles_obs)
             self._footprints = {k: torch.as_tensor(v, device=dev) for k, v in packed.items()}
+
+    def _policy_obs_dim(self, cfg: DroneNavObstaclesEnvCfg) -> int:
+        """Size of the "policy" observation. Called before the env is built; here, the privileged observation."""
+        return self._privileged_obs_dim
 
     def _layouts(self) -> dict:
         """{(row, col): layout} for every tile, as the terrain function recorded them while Isaac Lab built them."""
