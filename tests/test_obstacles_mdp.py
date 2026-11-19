@@ -201,3 +201,10 @@ def test_closest_by_kind():
     kinds = torch.tensor([[0, 2, 0, -1], [2, 2, 1, -1]])
     out = mdp.closest_by_kind(dist, kinds, 4)
     torch.testing.assert_close(out, torch.tensor([[0.5, inf, 0.2, inf], [inf, 0.4, 1.0, inf]]))
+
+
+def test_heading_travel_angle():
+    yaw = torch.tensor([0.0, 0.0, math.pi / 2, math.pi, -3.0])
+    vel = torch.tensor([[2.0, 0.0], [0.0, 1.0], [0.0, 3.0], [1.0, 0.0], [-1.0, 0.0]])
+    expected = torch.tensor([0.0, math.pi / 2, 0.0, math.pi, math.pi - 3.0])  # -3 rad vs pi: wraps to 0.14
+    torch.testing.assert_close(mdp.heading_travel_angle(yaw, vel), expected, atol=1e-6, rtol=0)

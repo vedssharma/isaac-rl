@@ -111,6 +111,11 @@ class DroneNavObstaclesEnvCfg(DroneNavGoalCTBREnvCfg):
     slow_distance: float = 0.0  # m of clearance
     near_speed_limit: float = 1.5  # m/s
 
+    # Metrics/heading_*: a step counts as moving above this horizontal speed (m/s), and the direction of travel is
+    # "in view" within this angle (rad) of the heading: 45 degrees, half the Phase 3 camera's horizontal FOV.
+    moving_speed: float = 0.5
+    camera_half_fov: float = 0.7853981633974483
+
     # Spawn and goal points stay this far inside the start and goal strips (from their edges and the side walls).
     strip_margin = 0.5
     # Evaluation: put every env on this difficulty row (0-9) instead of random ones. -1 (off) for training; an int
@@ -213,6 +218,11 @@ class DroneNavObstaclesEnv(DroneNavGoalEnv):
         # Speed while something is within warning_distance, summed over the episode (Metrics/speed_near_obstacles).
         self._near_speed_sum = torch.zeros(n, device=dev)
         self._near_steps = torch.zeros(n, device=dev)
+        # Heading against direction of travel while moving (Metrics/heading_*): does a forward camera see where the
+        # drone is going? Phase 3's student has a 90-degree forward camera (docs/phase3-depth-student.md).
+        self._moving_steps = torch.zeros(n, device=dev)
+        self._heading_angle_sum = torch.zeros(n, device=dev)
+        self._travel_in_fov_steps = torch.zeros(n, device=dev)
         self._tile_layouts = None
         self._layouts_cache = None
         self._origin_in_tile = of.terrain_origin(self._tile_params)[:2]
@@ -404,6 +414,13 @@ class DroneNavObstaclesEnv(DroneNavGoalEnv):
         speed = torch.linalg.norm(self._robot.data.root_lin_vel_w[:, :2], dim=1)
         self._near_speed_sum += speed * near.float()
         self._near_steps += near.float()
+        moving = (speed > self.cfg.moving_speed).float()
+        angle = obs_mdp.heading_travel_angle(
+            obs_mdp.yaw_from_quat(self._robot.data.root_quat_w), self._robot.data.root_lin_vel_w[:, :2]
+        )
+        self._moving_steps += moving
+        self._heading_angle_sum += angle * moving
+        self._travel_in_fov_steps += (angle <= self.cfg.camera_half_fov).float() * moving
         if self._tile_layouts is not None:
             self._record_trace()
             if hit.any():
@@ -453,6 +470,9 @@ class DroneNavObstaclesEnv(DroneNavGoalEnv):
         self._near_time[env_ids] = 0.0
         self._near_speed_sum[env_ids] = 0.0
         self._near_steps[env_ids] = 0.0
+        self._moving_steps[env_ids] = 0.0
+        self._heading_angle_sum[env_ids] = 0.0
+        self._travel_in_fov_steps[env_ids] = 0.0
         if self._tile_layouts is not None:
             self._hit_kind[env_ids] = -1
             self._trace_len[env_ids] = 0
@@ -479,6 +499,13 @@ class DroneNavObstaclesEnv(DroneNavGoalEnv):
         # Mean horizontal speed while an obstacle was within warning_distance, over episodes that came that close.
         steps = self._near_steps[ended]
         log["Metrics/speed_near_obstacles"] = (self._near_speed_sum[ended] / steps.clamp(min=1.0))[steps > 0]
+        # Over the steps the drone was moving: mean angle between heading and travel (degrees), and the share of
+        # those steps the direction of travel was inside a forward camera's field of view.
+        moving = self._moving_steps[ended]
+        log["Metrics/heading_travel_angle_deg"] = torch.rad2deg(
+            self._heading_angle_sum[ended] / moving.clamp(min=1.0)
+        )[moving > 0]
+        log["Metrics/travel_in_camera_fov"] = (self._travel_in_fov_steps[ended] / moving.clamp(min=1.0))[moving > 0]
         log["Curriculum/terrain_level"] = self._episode_level[ended].float()  # the level each episode was played on
         # Difficulty histogram over all envs (PLAN.md §5.3: "your best progress chart").
         for level, fraction in enumerate(level_fractions(self._terrain.terrain_levels, self._num_levels)):
