@@ -910,14 +910,14 @@ held-out maps it scores 90.4% / 9.2%.
    points (89.8% → 93.8%). The confidence intervals don't overlap the slowdown's on either. Information alone or
    pressure alone each moved the overall rate by at most 1.4 points. The effect is far more than additive.
 2. **The policy now gives poles room.** Pole passes within 0.2 m drop to 13.9%, and the median pole pass widens by
-   8 cm (0.45 → 0.53 m). With geometry it can rely on, the margin pressure finally reaches poles. Walls, the other
-   obstacle that the ring sees in pieces at a door's edges, nearly disappear (1.6% → 0.15%).
+   8 cm (0.45 → 0.53 m). With geometry it can rely on, the margin pressure finally reaches poles. Wall collisions
+   nearly disappear too (1.6% → 0.15%).
 3. **What's left of poles changed shape.** 69% of the remaining pole hits were on a line clearing the pole by ≥ 10 cm
    500 ms before impact (35% for the slowdown), and they happen slower (1.9 against 2.7 m/s). So most of what's
    left is drifting into a pole while manoeuvring, not shaving past one.
 4. **The cost is small:** 0.2 s more to the goal, path efficiency 0.89 against 0.90.
 5. **Exit criterion:** success (93.8% ≥ 90%) is met; collisions (5.65% against < 5%) aren't quite, and the CI
-   (4.7–6.7%) straddles the target. That's one seed. §10.2 showed seed-to-seed spread of about ±1 point on
+   (4.7–6.7%) straddles the target. That's one seed. §10.2's seeds differed by up to about a point on
    collisions, so this needs seeds 1 and 2 before it counts.
 
 **What it means for the plan.** The Phase 2 teacher is privileged by design (PLAN.md §4.2), so it should carry the
