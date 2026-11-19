@@ -38,7 +38,9 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import brevcli
+import wandb_summary
 from brevcli import BrevError, brev, get_instance, ssh
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -132,20 +134,17 @@ def restore_summary_keys(run, keys: tuple[str, ...]) -> list[str]:
     missing = [k for k in keys if run.summary.get(k) is None]
     if not missing:
         return []
-    import tempfile
-
-    try:
-        with tempfile.TemporaryDirectory() as tmp:
-            run.file("wandb-summary.json").download(root=tmp, replace=True)
-            saved = json.loads((Path(tmp) / "wandb-summary.json").read_text())
-        restored = {k: saved[k] for k in missing if saved.get(k) is not None}
-        if restored:
-            run.summary.update(restored)
-            log(f"verify: restored {', '.join(restored)} to the W&B summary from wandb-summary.json")
-        return list(restored)
-    except Exception as e:  # noqa: BLE001
-        log(f"verify: couldn't read wandb-summary.json to restore {missing}: {e}")
+    saved = wandb_summary.saved_summary(run)
+    restored = {k: saved[k] for k in missing if saved.get(k) is not None}
+    if not restored:
+        log(f"verify: couldn't restore {missing} from wandb-summary.json")
         return []
+    try:
+        run.summary.update(restored)
+    except Exception as e:  # noqa: BLE001
+        log(f"verify: couldn't write {list(restored)} back to the W&B summary: {e}")
+    log(f"verify: restored {', '.join(restored)} to the W&B summary from wandb-summary.json")
+    return list(restored)
 
 
 def eval_play_overrides(train_args: list[str], eval_overrides: list[str]) -> list[str]:

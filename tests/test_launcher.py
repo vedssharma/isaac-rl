@@ -276,3 +276,14 @@ def test_restore_summary_keys_from_the_summary_file():
     # No file, or the file lacks them too: nothing restored, and no exception.
     assert launch.restore_summary_keys(_FakeRun({}, None), keys) == []
     assert launch.restore_summary_keys(_FakeRun({}, {"other": 1}), keys) == []
+
+
+def test_summary_value_falls_back_to_the_summary_file():
+    import wandb_summary
+
+    saved = {"hf_url": "https://hf/x", "final_checkpoint": "x"}
+    run = _FakeRun({"hf_url": None, "final_checkpoint": "model_9.pt"}, saved)
+    assert wandb_summary.summary_value(run, "final_checkpoint") == "model_9.pt"  # the live summary wins
+    assert wandb_summary.summary_value(run, "hf_url") == "https://hf/x"
+    assert wandb_summary.summary_value(run, "missing") is None
+    assert wandb_summary.summary_value(_FakeRun({}, None), "hf_url") is None  # no file: None, no exception
