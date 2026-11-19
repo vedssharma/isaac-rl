@@ -6,13 +6,13 @@ Builds the depth env with noise off, resets it and takes one zero-action step (t
 headings). Then, for every level camera, it compares the whole image with obstacle_field.camera_depth_replay: the
 exact image of that tile's recorded layout (footprints as prisms, ground plane at z = 0) from the camera's own pose.
 It reports the share of pixels that agree, by what each pixel should see (pole, cylinder, box, wall, side wall,
-ground, nothing within range), and whether disagreeing pixels read nearer or farther. Pixels that should see nothing
-but read nearer are obstacles in a neighbouring tile, outside the replay. It also checks the observation layout,
+ground, nothing within range), and whether disagreeing pixels read nearer or farther. The replay includes the 8
+neighbouring tiles, which a camera near a tile's end looks into. It also checks the observation layout,
 times env.step, and saves camera | expected | difference images (plus a noisy one) for a few envs.
 
 Results go to logs/check_depth/<name>/ (report.json, PNGs) and, with HF_TOKEN and HF_REPO_ID set, to
-runs/drone_nav_depth/checks/<name>/ on Hugging Face. Exits 0 if at least --min_agreement of the in-tile pixels
-agree, 2 otherwise.
+runs/drone_nav_depth/checks/<name>/ on Hugging Face. Exits 0 if at least --min_agreement of the pixels agree, 2
+otherwise.
 """
 
 import argparse
@@ -26,12 +26,13 @@ parser.add_argument("--level", type=int, default=5, help="difficulty row every e
 parser.add_argument("--timing_steps", type=int, default=200)
 parser.add_argument("--images", type=int, default=8, help="envs to save images of")
 parser.add_argument("--tol", type=float, default=0.03, help="m, plus 1%% of the depth")
-parser.add_argument("--min_agreement", type=float, default=0.97)
+parser.add_argument("--min_agreement", type=float, default=0.99)
 parser.add_argument("--name", default="check_depth")
 AppLauncher.add_app_launcher_args(parser)
 args_cli = parser.parse_args()
 simulation_app = AppLauncher(args_cli).app
 
+import dataclasses  # noqa: E402
 import json  # noqa: E402
 import math  # noqa: E402
 import os  # noqa: E402
@@ -127,10 +128,23 @@ def main() -> int:
     agree, total, nearer, farther = Counter(), Counter(), Counter(), Counter()
     per_env = []
     saved = 0
+    neighbour_pixels = 0
     for i in np.nonzero(level)[0]:
         r, c = int(rows[i]), int(cols[i])
         layout = layouts[(r, c)]
+        # This tile's footprints, then its 8 neighbours' moved into this tile's frame: a camera near a tile's end
+        # looks into the next tile (the range, 6 m, is shorter than a tile, so no further).
         footprints = of.layout_footprints(layout)
+        own = len(footprints)
+        for r2 in range(max(r - 1, 0), min(r + 2, terrain_origins.shape[0])):
+            for c2 in range(max(c - 1, 0), min(c + 2, terrain_origins.shape[1])):
+                if (r2, c2) == (r, c):
+                    continue
+                dx, dy = terrain_origins[r2, c2, :2] - terrain_origins[r, c, :2]
+                footprints += [
+                    dataclasses.replace(o, center=(o.center[0] + dx, o.center[1] + dy))
+                    for o in of.layout_footprints(layouts[(r2, c2)])
+                ]
         p_tile = pos[i, :2] - terrain_origins[r, c, :2] + origin_in_tile[:2]
         z = pos[i, 2] - env_origins[i, 2]
         exp, src = of.camera_depth_replay(
@@ -147,24 +161,22 @@ def main() -> int:
             agree[k] += int((ok & m).sum())
             nearer[k] += int((~ok & m & (diff < 0)).sum())
             farther[k] += int((~ok & m & (diff > 0)).sum())
-        in_tile = ~((kinds == "nothing") & (diff < 0))  # nearer than "nothing": a neighbouring tile's obstacle
-        per_env.append(float(ok[in_tile].mean()))
+        neighbour_pixels += int((src >= own).sum())
+        per_env.append(float(ok.mean()))
         if saved < args_cli.images:
             save_images(out_dir / f"env{i:04d}.png", [depth[i], exp, np.abs(diff)], max_range)
             np.savez_compressed(out_dir / f"env{i:04d}.npz", camera=depth[i], expected=exp, source=src)
             saved += 1
 
-    in_tile_total = sum(total.values()) - nearer["nothing"]
-    in_tile_agree = sum(agree.values())
-    agreement = in_tile_agree / max(in_tile_total, 1)
+    agreement = sum(agree.values()) / max(sum(total.values()), 1)
     report["geometry"] = {
         "level_cameras": int(level.sum()),
-        "agreement_in_tile": agreement,
+        "agreement": agreement,
         "by_expected_source": {
             k: {"pixels": total[k], "agree": agree[k] / total[k], "nearer": nearer[k], "farther": farther[k]}
             for k in sorted(total)
         },
-        "neighbouring_tile_pixels": nearer["nothing"],
+        "pixels_seeing_a_neighbouring_tile": neighbour_pixels,
         "envs_below_95pct": int(sum(a < 0.95 for a in per_env)),
         "worst_envs": sorted(per_env)[:5],
     }
@@ -194,7 +206,7 @@ def main() -> int:
     ok = agreement >= args_cli.min_agreement and report["obs"]["policy_matches_teacher_goal_part"]
     report["passed"] = bool(ok)
     (out_dir / "report.json").write_text(json.dumps(report, indent=2) + "\n")
-    print(f"[INFO] {'PASSED' if ok else 'FAILED'}: {100 * agreement:.2f}% of in-tile pixels agree")
+    print(f"[INFO] {'PASSED' if ok else 'FAILED'}: {100 * agreement:.2f}% of pixels agree")
     upload(out_dir, args_cli.name)
     env.close()
     return 0 if ok else 2
