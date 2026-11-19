@@ -31,8 +31,8 @@ Status:
   0.2 m three to six times as often as any other obstacle, even with exact positions. Next: clearance pressure.
 - [x] Training with a 0.15 m collision margin (§16): halves cylinder hits, but poles are unchanged (6.1%) and so is
   the overall rate (89.8% / 9.9%). The policy keeps more room from large obstacles, not from poles.
-- [x] Margin and nearest-obstacle observation together (§17): **93.8% / 5.65%**, the best teacher yet, one seed.
-  Success clears the 90% target; collisions are just above 5%. Poles 3.75%.
+- [x] Margin and nearest-obstacle observation together (§17): 93.8% / 5.65% on seed 42, but **91.0% / 7.5% over
+  3 seeds** (§17.1). Collisions −2.6 points against the slowdown alone; the < 5% target is still not met.
 - [ ] Ablations
 
 ## 1. Obstacle terrain
@@ -932,5 +932,57 @@ started 2 s after the restore, still read the old summary, and skipped its Huggi
 `wandb-summary.json` (`846b24c`). That evaluation was re-run play-only and reproduced 93.80% / 5.65% exactly. Kit
 shut down normally on both boxes. Cost: $0.99 training with both evaluations, plus $0.55 for the re-run.
 
-**Next:** seeds 1 and 2 of this configuration, with the same evaluation, to check against the exit criterion.
+**Next:** seeds 1 and 2 of this configuration, with the same evaluation, to check against the exit criterion (§17.1).
+
+### 17.1 Three seeds: seed 42 was the lucky one
+
+Seeds 1 and 2 of the same configuration, trained and evaluated exactly like seed 42. W&B:
+[z5m5nb1s](https://forge.coreweave.com/wandb/vedssharma1/isaac-rl/runs/z5m5nb1s) (s1),
+[l6ijehy3](https://forge.coreweave.com/wandb/vedssharma1/isaac-rl/runs/l6ijehy3) (s2); commit `deafff1`.
+
+| Level 5, 60 held-out layouts, at 0.1 m | s42 / s1 / s2 | **Mean ± SD** | Slowdown alone (§10.2), mean ± SD |
+|---|---|---:|---:|
+| **Success** | 93.8 / 88.1 / 91.2 | **91.0 ± 2.9** | 89.7 ± 0.3 |
+| **Collisions** | 5.65 / 8.4 / 8.4 | **7.5 ± 1.6** | 10.0 ± 0.4 |
+| … poles | 3.75 / 5.0 / 4.55 | 4.4 | 5.8 |
+| … cylinders | 1.35 / 1.05 / 1.35 | 1.25 | 2.4 |
+| … walls | 0.15 / 1.25 / 1.0 | 0.8 | 1.0 |
+| … boxes | 0.4 / 0.85 / 1.2 | 0.8 | 0.8 |
+| Flipped / too high / time-out | 0.1 / 2.7 / 0.2; 0 / 0.8 / 0; 0.25 / 0 / 0.15 | 1.0 / 0.3 / 0.1 | 0 / 0 / 0 |
+| Pole passes within 0.2 m | 13.9 / 17.2 / 15.7 | 15.6 | 19.6 (s42 only) |
+| Time to goal (s) | 8.46 / 8.35 / 8.50 | 8.4 | 8.2 |
+| End of training, at 0.15 m: success / collisions | 90.7/8.3, 93.8/6.2, 86.9/13.1 | | |
+
+All in % of episodes unless stated. SD is across seeds.
+
+1. **The gain is real but about half what seed 42 suggested.** Collisions fall 2.6 points against the slowdown
+   alone (7.5% against 10.0%; Welch's t = 2.7). Every seed is below every slowdown seed. Success rises only 1.3
+   points on average (t = 0.8), because seed 1 trades collisions for flips.
+2. **Poles improve on every seed** (4.4% against 5.8%) and cylinders halve, as in §16. Poles are still the largest
+   cause, and pole passes within 0.2 m stay well above the other kinds (15.6%).
+3. **It's much less consistent across seeds.** The slowdown alone landed within 0.3 points of 89.7% on all three
+   seeds; this varies from 88% to 94%. Seed 1 flips on 2.7% of episodes and climbs out the top on 0.8%, failure
+   modes no slowdown seed showed. The extra observation and the stricter margin make training less stable.
+4. **Exit criterion still not met.** The mean success is 91.0% (≥ 90% met on two seeds of three), but collisions
+   average 7.5% against < 5%, and no seed is under 5%.
+
+**Where Phase 2 stands.** Over three seeds each, the teacher has gone from 86.4% / 12.6% (§10.2 baseline) to
+91.0% / 7.5%. The remaining collisions are mostly poles, then a spread of everything else. Options:
+
+- **Keep tuning the teacher:** a larger margin (0.2 m), longer training (3000 iterations), or a steeper proximity
+  term near the collision radius. Each costs about $1.50 per three seeds. None is
+  obviously the one that gets to < 5%.
+- **Accept this teacher and start Phase 3.** The teacher's job is to be good enough to distill; 91% / 7.5% from
+  privileged geometry is a reasonable target for a depth student whose own exit bar is ≥ 85% success. Seed 1's flips
+  argue for distilling from seed 42 or seed 2.
+- **Relax the < 5% collision criterion** for the teacher explicitly and record why (poles 3–6 cm thick against a
+  10 cm collision radius are the hardest case, and the student will face them with less information).
+
+**Infrastructure.** W&B dropped the same summary keys on both runs, and both launchers restored them; both
+evaluations uploaded their results. Seed 1's launcher finished normally ($0.49). Seed 2's launcher was killed with
+the Claude Code session right after it sent `brev delete`, and the delete never took effect. The box sat RUNNING
+for about 15 hours (about $33) until `reap.py` found and deleted it the next morning. The fix that exists is
+procedural (memory note: wait for every launcher's teardown before a session ends, and run `reap.py` at the start
+of each session). A launcher that confirms the delete before it exits, or a box-side idle shutdown, would be the
+code fix.
 
