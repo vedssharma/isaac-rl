@@ -27,6 +27,8 @@ Status:
   The world-fixed ring stays.
 - [x] Privileged nearest-obstacle observation (§13): poles 5.4% → 4.5%, overall a wash (89.3% / 8.8%). Pole
   collisions aren't mainly about sensing or information.
+- [x] Pole near misses (§15): most pole hits are grazes, not head-on crashes. The policy passes poles within
+  0.2 m three to six times as often as any other obstacle, even with exact positions. Next: clearance pressure.
 - [ ] Ablations
 
 ## 1. Obstacle terrain
@@ -743,3 +745,76 @@ the watchdog doing its job.
 
 One stall isn't explained by this. On 2026-11-16, an evaluation that crashed at start-up (exiting through
 `os._exit`, not Kit's shutdown) still took the launcher 18 minutes to notice. Worth watching for.
+
+## 15. How the drone meets poles: near misses
+
+§13 ruled out sensing and information as the main cause of pole collisions, which left *how the drone passes
+poles*. `env.attribute_collisions=True` now also logs `NearMiss/*` (commit `b7eafdd`):
+
+- **Per collision**, from the lidar replay's 1 s trace (`of.near_miss_summary`): the obstacle's radius, the speed,
+  the approach angle (between the velocity and the direction to the obstacle's nearest point; 0° is flying straight
+  at it, 90° is moving along its surface), and the **straight-line miss** 0, 250 and 500 ms before impact. The
+  straight-line miss is how far the drone's centre would have passed from the surface if it had flown straight
+  on from there. It is negative when the line goes through the obstacle. Round obstacles only.
+- **Per episode**, from exact footprint distances every step: the closest the drone came to each kind of obstacle,
+  over episodes that came within 1 m of one (`NearMiss/<kind>_closest`). This puts the collisions next to the
+  passes that didn't hit.
+
+`play.py` keeps the raw `NearMiss/*` values in the results JSON. Both policies were evaluated with no retraining, on
+the 60 held-out level-5 layouts, 2000 episodes each, and reproduce their earlier numbers exactly: the mild
+slowdown (`mh19cygo`, §10; 89.8% / 10.2%, 108 pole hits as in §11) and the same plus 4 nearest obstacles
+(`lnb0fe9q`, §13; 89.3% / 8.8%, 89 pole hits). The two evaluations cost about $0.70 each.
+
+**Pole collisions** (mild slowdown; the nearest-4 policy is within a few points on every row):
+
+| | 500 ms before | 250 ms before | At impact |
+|---|---:|---:|---:|
+| Straight line goes through the pole | 26% | 30% | 20% |
+| … clears the surface by 0–5 cm | 24% | 36% | 44% |
+| … clears it by 5–10 cm | 15% | 20% | 36% |
+| … clears it by ≥ 10 cm | 35% | 14% | 0% |
+| Median straight-line miss | 5.0 cm | 3.1 cm | 3.6 cm |
+
+At impact: approach angle median 41° (29% under 30°, 30% over 60°), speed 2.7 m/s, pole radius 3–6 cm (median
+4.4 cm). For comparison, at 250 ms before
+impact, 79% of cylinder hits are on a line straight through the cylinder: those really are crashes into it.
+
+**Closest pass per episode**, over episodes that came within 1 m of that kind (mild slowdown):
+
+| | Passes | < 0.1 m (hit) | 0.1–0.15 m | 0.15–0.2 m | **Within 0.2 m** | Hit, given within 0.2 m | Median |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| **pole** | 1045 | 10.3% | 3.8% | 5.5% | **19.6%** | 53% | 0.45 m |
+| cylinder | 1747 | 2.5% | 1.3% | 2.1% | 5.9% | 43% | 0.51 m |
+| box | 1551 | 1.3% | 1.3% | 0.8% | 3.4% | 38% | 0.56 m |
+| wall | 1361 | 2.5% | 2.3% | 3.5% | 8.3% | 30% | 0.45 m |
+| + 4 nearest: pole | 1065 | 8.4% | 2.6% | 5.0% | 16.0% | 52% | 0.47 m |
+
+1. **Most pole collisions are grazes, not crashes.** At impact, 80% of pole hits are on a line that would clear
+   the pole's surface, by 3.6 cm at the median. The drone's centre is within 10 cm of the surface (the collision
+   rule), but its path goes past the pole. Only about a quarter are head-on: on a line through the pole 250–500 ms
+   out, never corrected in time. Cylinder hits look the opposite way: most are on a line straight through it.
+2. **The policy passes poles tight on purpose.** Of the episodes that pass a pole, 19.6% come within 0.2 m of its
+   surface, against 3.4–8.3% for the other kinds. Within that band, a pole pass is only a little more likely to
+   end in a hit (53% against 30–43%). So the excess comes from how often the drone cuts close to poles, not from
+   poles being harder to clear once it does. A thin pole costs almost no detour to shave past, and the reward
+   barely charges for a close pass (the proximity term is −1 × exp(−clearance / 0.3 m) per second, for a pass
+   lasting a few hundredths of a second).
+3. **Perfect information doesn't change this.** With the 4 nearest obstacles' exact geometry in its observation,
+   the policy still comes within 0.2 m on 16% of pole passes, with the same graze-dominated pattern. That matches
+   §13: the policy knows where the pole is and chooses to pass it closely.
+4. A third of pole hits (35%) were on a line that would clear the pole by ≥ 10 cm 500 ms out, and drifted in.
+   Plausibly the drone was turning back towards the goal or around a neighbouring obstacle. That fits the same
+   explanation: the policy is content with a few centimetres of margin.
+5. Kit shut down normally on both boxes (no `Kit shutdown still running` warning), so §14's watchdog wasn't needed.
+
+**Next: clearance pressure, aimed at grazes.** In order:
+
+- **A training margin larger than the evaluation's:** `collision_radius=0.15` in training, 0.1 m in evaluation.
+  Grazes at 0.1–0.15 m become training crashes, which is exactly the band that's over-represented for poles. It
+  needs `env.collision_radius=0.1` passed to the evaluation by hand, since `--eval` reuses the training overrides.
+  `collision_radius` also offsets the proximity term, so this shifts the shaping by 5 cm as well.
+- **A proximity term that rises steeply near the collision radius,** for example a shorter `proximity_sigma` with a
+  larger weight. §6's sweep only went the other way (σ = 0.6 m, weight 3, or both), which spreads the
+  penalty further out instead of concentrating it on near misses.
+- Slowing down near poles specifically addresses only the head-on quarter, so it comes after these.
+
