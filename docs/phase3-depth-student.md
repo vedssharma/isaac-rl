@@ -90,14 +90,14 @@ The worst camera agrees on 98.9% of its pixels; 447k pixels (14%) see into a nei
 2. **Round obstacles read slightly farther at their silhouettes,** and only there: every cylinder and pole miss is
    "farther". The terrain meshes a circle as a 16-sided polygon inside it (`_CIRCLE_SIDES`), so a ray that just
    clips the true circle can miss the mesh and see what's behind. That's a property of the world, not the camera,
-   and the teacher's lidar sees the same mesh. For a 3–6 cm pole the polygon is 0.1 mm smaller in radius, but at 64
+   and the teacher's lidar sees the same mesh. For a 3–6 cm pole the polygon is only 0.6–1.2 mm smaller in radius, but at 64
    pixels across 90° a pole 2 m away is one or two pixels wide, so its edges are a large share of its pixels.
 3. **Thin poles are tiny in the image:** 2,660 pole pixels in 1024 images against 65k for cylinders. The student
    will have even less to go on for poles than the lidar ring had (Phase 2 §11), which is worth remembering when its
    pole collisions are compared with the teacher's.
 4. With noise on, the share of max-range pixels rises from 25.7% to 29.8% (dropout plus edge dropout).
 
-Cost: $0.19 and about $0.20 for the two checks.
+Cost: $0.56 and $0.19 for the two checks (the first box's delete took 13 minutes).
 
 **Next:** the CNN student and `scripts/distill.py`. RSL-RL 3.1.2 (on the boxes) has a `DistillationRunner`, but its
 `StudentTeacher` policy is MLP-only and is chosen by `eval(class_name)` in RSL-RL's own namespace. So the DAgger
