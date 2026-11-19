@@ -786,9 +786,9 @@ impact, 79% of cylinder hits are on a line straight through the cylinder: those 
 | | Passes | < 0.1 m (hit) | 0.1–0.15 m | 0.15–0.2 m | **Within 0.2 m** | Hit, given within 0.2 m | Median |
 |---|---:|---:|---:|---:|---:|---:|---:|
 | **pole** | 1045 | 10.3% | 3.8% | 5.5% | **19.6%** | 53% | 0.45 m |
-| cylinder | 1747 | 2.5% | 1.3% | 2.1% | 5.9% | 43% | 0.51 m |
+| cylinder | 1747 | 2.5% | 1.3% | 2.1% | 5.8% | 43% | 0.51 m |
 | box | 1551 | 1.3% | 1.3% | 0.8% | 3.4% | 38% | 0.56 m |
-| wall | 1361 | 2.5% | 2.3% | 3.5% | 8.3% | 30% | 0.45 m |
+| wall | 1361 | 2.5% | 2.3% | 3.5% | 8.2% | 30% | 0.45 m |
 | + 4 nearest: pole | 1065 | 8.4% | 2.6% | 5.0% | 16.0% | 52% | 0.47 m |
 
 1. **Most pole collisions are grazes, not crashes.** At impact, 80% of pole hits are on a line that would clear
@@ -796,7 +796,7 @@ impact, 79% of cylinder hits are on a line straight through the cylinder: those 
    rule), but its path goes past the pole. Only about a quarter are head-on: on a line through the pole 250–500 ms
    out, never corrected in time. Cylinder hits look the opposite way: most are on a line straight through it.
 2. **The policy passes poles tight on purpose.** Of the episodes that pass a pole, 19.6% come within 0.2 m of its
-   surface, against 3.4–8.3% for the other kinds. Within that band, a pole pass is only a little more likely to
+   surface, against 3.4–8.2% for the other kinds. Within that band, a pole pass is only a little more likely to
    end in a hit (53% against 30–43%). So the excess comes from how often the drone cuts close to poles, not from
    poles being harder to clear once it does. A thin pole costs almost no detour to shave past, and the reward
    barely charges for a close pass (the proximity term is −1 × exp(−clearance / 0.3 m) per second, for a pass
