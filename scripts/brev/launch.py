@@ -123,6 +123,31 @@ def hydra_key(arg: str) -> str | None:
     return key.lstrip("+~")
 
 
+def restore_summary_keys(run, keys: tuple[str, ...]) -> list[str]:
+    """Copy `keys` missing from a W&B run's summary back from its wandb-summary.json file, and return those restored.
+
+    The W&B server sometimes drops keys from a run's summary that the client wrote just before wandb.finish(),
+    though the summary file it uploaded has them (p2-slow-margin15-s42, 2026-11-19). play.py reads final_checkpoint
+    and hf_url from the summary, so they're put back. Never raises."""
+    missing = [k for k in keys if run.summary.get(k) is None]
+    if not missing:
+        return []
+    import tempfile
+
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            run.file("wandb-summary.json").download(root=tmp, replace=True)
+            saved = json.loads((Path(tmp) / "wandb-summary.json").read_text())
+        restored = {k: saved[k] for k in missing if saved.get(k) is not None}
+        if restored:
+            run.summary.update(restored)
+            log(f"verify: restored {', '.join(restored)} to the W&B summary from wandb-summary.json")
+        return list(restored)
+    except Exception as e:  # noqa: BLE001
+        log(f"verify: couldn't read wandb-summary.json to restore {missing}: {e}")
+        return []
+
+
 def eval_play_overrides(train_args: list[str], eval_overrides: list[str]) -> list[str]:
     """The overrides play.py gets for one --eval: the training run's env./agent. overrides, so it evaluates the env
     the policy was trained in (a changed observation would not even load), then the eval's own. Where both set a
@@ -489,6 +514,7 @@ echo "started pid $!"
             log(f"verify: W&B run {path} not found: {e}")
             return False
         self.record["wandb_url"] = run.url
+        restore_summary_keys(run, ("final_checkpoint", "hf_url", "training_time_s"))
         ckpt, hf_url = run.summary.get("final_checkpoint"), run.summary.get("hf_url")
         self.record["final_checkpoint"], self.record["hf_url"] = ckpt, hf_url
         problems = []

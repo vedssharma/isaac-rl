@@ -246,3 +246,33 @@ def test_hydra_key():
     assert launch.hydra_key("+agent.x=[1,2]") == "agent.x"
     for not_override in ("--num_envs=1024", "T", "a=b", "env.a"):
         assert launch.hydra_key(not_override) is None
+
+
+class _FakeRun:
+    """A W&B run whose server summary lost keys that its wandb-summary.json file still has."""
+
+    def __init__(self, summary: dict, saved: dict | None):
+        self.summary, self._saved = dict(summary), saved
+
+    def file(self, name):
+        run = self
+
+        class _File:
+            def download(self, root, replace):
+                if run._saved is None:
+                    raise FileNotFoundError(name)
+                Path(root, name).write_text(launch.json.dumps(run._saved))
+
+        return _File()
+
+
+def test_restore_summary_keys_from_the_summary_file():
+    saved = {"final_checkpoint": "model_1499.pt", "hf_url": "https://hf/x", "training_time_s": 695.0}
+    run = _FakeRun({"training_time_s": 1.0}, saved)
+    keys = ("final_checkpoint", "hf_url", "training_time_s")
+    assert launch.restore_summary_keys(run, keys) == ["final_checkpoint", "hf_url"]
+    assert run.summary == {"final_checkpoint": "model_1499.pt", "hf_url": "https://hf/x", "training_time_s": 1.0}
+    assert launch.restore_summary_keys(run, keys) == []  # nothing missing: no download
+    # No file, or the file lacks them too: nothing restored, and no exception.
+    assert launch.restore_summary_keys(_FakeRun({}, None), keys) == []
+    assert launch.restore_summary_keys(_FakeRun({}, {"other": 1}), keys) == []
