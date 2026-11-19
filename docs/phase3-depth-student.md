@@ -8,7 +8,10 @@ Status:
 
 - [x] `Drone-Nav-Depth-v0`: a ray-cast depth camera, a noise model, and the teacher's observation alongside (§1)
 - [x] The camera checked against exact geometry on 1024 drones: 99.97% of pixels agree (§2)
-- [ ] CNN student and `scripts/distill.py` (DAgger from the frozen teacher)
+- [x] CNN student and `scripts/distill.py` (DAgger from the frozen teacher) (§3)
+- [x] First distillation: **3.6% success** on held-out level 5. The teacher flies backwards: its direction of
+  travel is inside a forward camera's view 1.9% of the time (§4)
+- [ ] A teacher that faces where it flies, then distil again (§5)
 - [ ] Option B: PPO from depth with an asymmetric critic
 - [ ] GRU memory
 - **Exit (G3):** ≥ 85% success at difficulty 5 from depth only.
@@ -107,3 +110,100 @@ loop will be our own script, as PLAN.md §8 already names it:
 - a small CNN encoder (64-d latent) on the depth image, concatenated with the 18 goal/proprioception inputs, into
   an MLP; a GRU comes after;
 - load the teacher from its RSL-RL checkpoint, including its observation normalizer.
+
+
+## 3. The student and DAgger distillation
+
+**The student** (`drone_nav/policies/depth_student.py`, 0.35M parameters) has three parts:
+- **CNN encoder:** four stride-2 convolutions (32, 64, 64, 128 channels; 5×5 then 3×3, ELU) turn the 48×64 depth
+  image into a 64-d latent.
+- **Normalizer:** a running normalizer on the 18 goal and motion inputs, like RSL-RL's empirical normalization.
+- **MLP:** 256, 256, 128 → the 4 CTBR actions.
+
+It is pure torch, with CPU tests for the normalizer, the observation split (row-major image), checkpoints and a
+small end-to-end fit.
+
+**Distillation** (`scripts/distill.py`) is DAgger:
+- Each iteration rolls out 24 steps in every env.
+- The executed action is the teacher's with probability β, else the student's. β falls linearly from 1 to 0 over
+  the first 100 iterations.
+- Every visited state is labelled with the frozen teacher's action. RSL-RL computes it from the env's `teacher`
+  observation group (`obs_groups = {"policy": ["teacher"], ...}`), so the teacher runs exactly as in training and
+  evaluation.
+- The student is fitted to the labels clamped to [−1, 1] with MSE: 2 epochs of 4 minibatches per rollout, Adam
+  at 5e-4, gradient clipping at 1.0.
+- The curriculum follows whoever flies.
+
+RSL-RL 3.1.2's own `DistillationRunner` couldn't be used: its `StudentTeacher` is MLP-only. W&B, checkpoints, the
+Hugging Face upload and the summary keys work as in `train.py`, so `launch.py --script distill` verifies the run.
+`play.py` recognises a student checkpoint and evaluates it like any policy.
+
+**Smoke run** (`p3-distill-smoke-s42`, 1024 envs, 30 iterations, $0.35): the whole pipeline ran, from teacher
+loading through training, verification and evaluation of the student on held-out maps.
+
+**First run** (`p3-distill-s42`,
+[oadiizgu](https://forge.coreweave.com/wandb/vedssharma1/isaac-rl/runs/oadiizgu), commit `7cc0553`): 4096 envs,
+1000 iterations, 2.1 s per iteration (47k samples/s), 35 minutes, $1.37.
+
+| Iteration | Teacher share β | Imitation loss | Training success / collisions | Envs mostly on |
+|---:|---:|---:|---:|---|
+| 50 | 0.50 | 0.004 | 100% / 0% | level 0 |
+| 100 | 0.00 | 0.048 | 87% / 13% | level 1 |
+| 250 | 0 | 0.063 | 50% / 51% | levels 1–3 |
+| 500 | 0 | 0.064 | 51% / 49% | levels 1–3 |
+| 999 | 0 | 0.062 | 48% / 52% | levels 1–3 |
+
+Held-out level 5 (60 layouts, 2000 episodes, 0.1 m rule): **3.6% success, 96.4% collisions**. By obstacle:
+walls 40.8%, boxes 27.5%, cylinders 23.4%, poles 3.6%, side walls 1.1%. Mean speed 2.7 m/s; collisions come
+0.46 s after something is first within 1 m.
+
+The student learns the teacher well while the teacher is flying (loss 0.004). Once it flies alone, the loss
+settles 15 times higher and it never gets past level 3, where the teacher is at nearly 100%. That is a student that
+can't see what the teacher reacts to, not one that lacks training: nothing improved over the last 750 iterations.
+
+## 4. Why: the teacher flies backwards
+
+The teacher's lidar ring is fixed in the world (Phase 2 §11), and its nearest-obstacle input covers every
+direction. So its heading doesn't matter to it, and nothing in its reward asks it to face where it flies. Drones
+spawn with a random heading, and a quadrotor flies in any direction without turning. The student's camera only
+covers 90° ahead.
+
+To measure it, `Drone-Nav-Obstacles-v0` now logs, over the steps a drone moves faster than 0.5 m/s:
+- `Metrics/heading_travel_angle_deg`: the angle between its heading (body +x, where the camera points) and its
+  direction of travel;
+- `Metrics/travel_in_camera_fov`: the share of those steps the direction of travel is within ±45° of the heading,
+  i.e. inside the camera's view.
+
+(Commit `536c7f2`, with a CPU test; the yaw convention is the one the camera check and the lidar code already use.)
+
+The teacher on the 60 held-out level-5 layouts (`p3-teacher-heading-eval-s42`, $0.18; it reproduces 93.8% / 5.65%
+exactly):
+
+| | Teacher |
+|---|---:|
+| Mean angle between heading and travel | **122°** |
+| Moving steps with the direction of travel in a forward camera's view | **1.9%** |
+
+A random heading held still would give 90° and 25%. The teacher does worse than that: it mostly flies with its tail
+forward. A forward camera on this teacher sees where it's going on about 1 step in 50, so the student is asked
+to copy reactions to obstacles it cannot see. That is consistent with everything in §3: it imitates well while the
+teacher drives, then stalls at about 50% on easy levels and crashes into walls (whose doors it never sees) most of
+all. No student architecture fixes this, and neither does a GRU, since the camera never sees the obstacle in the
+first place.
+
+## 5. Next: a teacher that faces where it flies
+
+The fix belongs in the teacher (PLAN.md's teacher is privileged, but it still has to be imitable from the student's
+viewpoint). Proposal:
+
+1. **A heading term in the obstacle task's reward:** `−w × (1 − cos(heading_travel_angle))` per second while moving,
+   off by default so Phase 2 runs reproduce. Possibly also spawn facing the goal (± some noise) so the policy
+   doesn't have to learn a 180° turn first.
+2. **Retrain the teacher** with the §17 settings (0.15 m margin, 4 nearest obstacles, mild slowdown) plus the
+   heading term. One seed first, about $1. Check `travel_in_camera_fov` (aim for > 90%) and that success and
+   collisions stay near 93.8% / 5.65%. The heading term may cost some of either.
+3. **Distil again** into the same student and compare with §3's 3.6%.
+
+The alternative, a 360° camera rig for the student, would sidestep the problem but drops PLAN.md's single forward
+camera, and real small drones don't carry one.
+\n
