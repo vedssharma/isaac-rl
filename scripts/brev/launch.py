@@ -85,9 +85,10 @@ def parse_args(argv: list[str]) -> tuple[argparse.Namespace, list[str]]:
     p.add_argument("--max-train-min", type=float, default=120, help="limit for the script (default 120)")
     p.add_argument(
         "--script",
-        choices=("train", "play"),
+        choices=("train", "play", "check_depth"),
         default="train",
-        help="train: scripts/train.py, verified on W&B/HF. play: scripts/play.py (evaluation), which must exit 0",
+        help="train: scripts/train.py, verified on W&B/HF. play: scripts/play.py (evaluation), which must exit 0. "
+        "check_depth: scripts/check_depth.py, which must exit 0",
     )
     p.add_argument(
         "--eval",
@@ -386,7 +387,7 @@ class Launch:
         remote_cmd = f"""set -euo pipefail
 {exports}
 command -v git >/dev/null || {{ sudo apt-get -o DPkg::Lock::Timeout=900 update -qq && sudo apt-get -o DPkg::Lock::Timeout=900 install -y -qq git; }}
-if pgrep -f '[s]cripts/(train|play).py' >/dev/null; then echo 'another job is already running here' >&2; exit 4; fi
+if pgrep -f '[s]cripts/(train|play|check_depth).py' >/dev/null; then echo 'another job is already running here' >&2; exit 4; fi
 mkdir -p {run_dir}
 [ -d {clone}/.git ] || git clone --quiet {q(self.clone_url)} {clone}
 git -C {clone} fetch --quiet origin
@@ -667,8 +668,8 @@ echo "started pid $!"
             # skip the teardown or the record.
             self.record["exit_code"] = self.exit_code
             if self.exit_code == 0 and not checked:
-                # play.py writes its own results (W&B summary, HF); exiting 0 is its success.
-                verified = self.args.script == "play" or bool(self.safely("verify", self.verify))
+                # play.py and check_depth.py write their own results (W&B, HF); exiting 0 is their success.
+                verified = self.args.script != "train" or bool(self.safely("verify", self.verify))
             if (
                 not verified
                 and self.started
@@ -704,8 +705,10 @@ def main(argv: list[str]) -> int:
         raise SystemExit("--eval runs after training; it needs --script train")
     if args.script == "train":
         train_args = build_train_args(train_args, args.run_name)
-    else:
+    elif args.script == "play":
         train_args = build_play_args(train_args)
+    elif "--headless" not in train_args:
+        train_args = [*train_args, "--headless"]
     load_env(args.env_file)
     sha, url = resolve_commit(args.ref, args.allow_dirty)
     # Signed in? list_instances retries with backoff: several launchers starting at once can get the Brev API's

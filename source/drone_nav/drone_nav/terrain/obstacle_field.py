@@ -607,6 +607,49 @@ def visibility_summary(vis: dict[str, np.ndarray], step_dt: float) -> dict[str, 
     }
 
 
+# -- depth-camera replay (Phase 3): what a level pinhole camera should see in a tile
+
+
+def camera_depth_replay(
+    footprints: list[Obstacle],
+    position,
+    yaw: float,
+    col_y: np.ndarray,
+    row_z: np.ndarray,
+    obstacle_height: float,
+    max_range: float,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Exact distance-to-image-plane image (H, W) of a level pinhole camera at tile-frame `position` (x, y, z above
+    the ground plane), looking along world heading `yaw`. Pixel (r, c)'s ray has camera-frame direction
+    (1, col_y[c], row_z[r]): x forward, y left, z up, as Isaac Lab's pinhole pattern builds them, so the ray reaches
+    the image-plane depth s at s * (1, y, z). Footprints are prisms from the ground to obstacle_height; the ground
+    is the plane z = 0 everywhere. Also returns the source of each pixel: the footprint's index, -1 for the ground,
+    -2 for nothing within max_range (depth = max_range)."""
+    col_y = np.asarray(col_y, dtype=np.float64)
+    row_z = np.asarray(row_z, dtype=np.float64)
+    x, y, z = (float(v) for v in position)
+    angles = yaw + np.arctan2(col_y, 1.0)  # (W,) world heading of each column
+    horiz = np.sqrt(1.0 + col_y**2)  # horizontal length of the ray per unit depth
+    shape = (len(row_z), len(col_y))
+    depth = np.full(shape, np.inf)
+    source = np.full(shape, -2, dtype=np.int64)
+    for i, o in enumerate(footprints):
+        t = ray_hit_distances(o, np.array([[x, y]]), angles[None])[0] / horiz  # (W,) depth of the wall hit
+        hit_z = z + row_z[:, None] * t[None, :]
+        ok = np.isfinite(t)[None, :] & (hit_z >= 0.0) & (hit_z <= obstacle_height)
+        d = np.where(ok, np.broadcast_to(t[None, :], shape), np.inf)
+        closer = d < depth
+        depth = np.where(closer, d, depth)
+        source = np.where(closer, i, source)
+    with np.errstate(divide="ignore"):
+        ground = np.where(row_z < 0.0, z / -row_z, np.inf)[:, None]  # (H, 1)
+    closer = ground < depth
+    depth = np.where(closer, ground, depth)
+    source = np.where(closer, -1, source)
+    beyond = depth >= max_range
+    return np.where(beyond, max_range, depth), np.where(beyond, -2, source)
+
+
 # -- near misses (evaluation): how did the drone meet the obstacle it hit?
 
 # Times before a collision at which near_miss_summary reports straight_line_miss.
