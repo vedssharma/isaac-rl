@@ -206,4 +206,3 @@ viewpoint). Proposal:
 
 The alternative, a 360° camera rig for the student, would sidestep the problem but drops PLAN.md's single forward
 camera, and real small drones don't carry one.
-\n
