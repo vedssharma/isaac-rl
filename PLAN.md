@@ -243,7 +243,8 @@ Each phase ends with a **demo video + W&B report**. Don't move on until the exit
   7.5% (3 seeds)**, collisions not met; the teacher is p2-slow-margin15-nearest4-s42 (docs/phase2-obstacles.md §18).
 
 ### Phase 3 — Depth-based student (weeks 6–8)
-- [ ] `RayCasterCamera` depth + noise model; CNN encoder
+- [x] `RayCasterCamera` depth + noise model (docs/phase3-depth-student.md §1–2)
+- [ ] CNN encoder
 - [ ] **Option A — Teacher→student distillation (DAgger):** roll out the student, label actions with the frozen
       teacher, and train with supervised loss. This is usually fastest and most stable.
 - [ ] **Option B — End-to-end PPO from depth** with an asymmetric critic. Compare against A; it's a good write-up result.
