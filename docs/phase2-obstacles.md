@@ -986,3 +986,21 @@ procedural (memory note: wait for every launcher's teardown before a session end
 of each session). A launcher that confirms the delete before it exits, or a box-side idle shutdown, would be the
 code fix.
 
+## 18. Closing Phase 2: the teacher for Phase 3
+
+Phase 2 ends without meeting its collision criterion (< 5%; the best configuration averages 7.5% over three seeds),
+and that is now a recorded decision rather than an open item: the 3–6 cm poles against a 10 cm collision radius are
+the residual, and §15–17 showed they need exact geometry plus pressure to improve at all. Success (≥ 90%) is met on
+average. Phase 3 starts from this teacher rather than spending more on it.
+
+**The Phase 3 teacher:** `p2-slow-margin15-nearest4-s42`
+([wn2l0g9q](https://forge.coreweave.com/wandb/vedssharma1/isaac-rl/runs/wn2l0g9q), `model_1499.pt`): 93.8% / 5.65% on
+the 60 held-out level-5 layouts, the best of the three seeds and free of seed 1's flips. Its observation is the
+goal task's 18 inputs, the 108-ray lidar ring and the 4 nearest obstacles (138), with the mild slowdown
+(`slow_distance=1.0`, `near_speed_limit=1.5`); it was trained at `collision_radius=0.15` and is evaluated at 0.1 m.
+Seed 2 ([l6ijehy3](https://forge.coreweave.com/wandb/vedssharma1/isaac-rl/runs/l6ijehy3), 91.2% / 8.4%) is the
+fallback.
+
+**Not done:** PLAN.md's Phase 2 ablations (no proximity shaping, no curriculum, number of rays, 3 seeds each). §6
+(proximity sweep) and §8 (5° ring) cover parts of them on one seed; the rest move to Phase 5's benchmark table.
+
