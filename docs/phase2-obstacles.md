@@ -31,6 +31,8 @@ Status:
   0.2 m three to six times as often as any other obstacle, even with exact positions. Next: clearance pressure.
 - [x] Training with a 0.15 m collision margin (§16): halves cylinder hits, but poles are unchanged (6.1%) and so is
   the overall rate (89.8% / 9.9%). The policy keeps more room from large obstacles, not from poles.
+- [x] Margin and nearest-obstacle observation together (§17): **93.8% / 5.65%**, the best teacher yet, one seed.
+  Success clears the 90% target; collisions are just above 5%. Poles 3.75%.
 - [ ] Ablations
 
 ## 1. Obstacle terrain
@@ -878,4 +880,57 @@ seed, same evaluation. If pole passes within 0.2 m drop well below 16–22%, pol
 should carry the privileged geometry. If they don't, it's time to stop tuning the teacher for poles: either accept
 the 89.8% / ~10% teacher and start Phase 3 (whose GRU is the other lead for poles), or relax the exit criterion for
 poles explicitly.
+
+## 17. Information and pressure together: 0.15 m margin plus the 4 nearest obstacles
+
+§13 gave the policy exact obstacle geometry without extra pressure to keep clear (pole passes within 0.2 m: 16%).
+§16 added the pressure without the information (22%). This run does both: `p2-slow-margin15-nearest4-s42`
+([wn2l0g9q](https://forge.coreweave.com/wandb/vedssharma1/isaac-rl/runs/wn2l0g9q), commit `3d4264b`). That's the mild
+slowdown, `env.collision_radius=0.15`, `env.nearest_obstacles_obs=4`, seed 42, 4096 envs, 1500 iterations,
+curriculum on. Evaluation as in §16, on the 60 held-out level-5 layouts at the usual 0.1 m rule.
+
+| Held-out level 5, at 0.1 m | Slowdown (§10) | + 4 nearest (§13) | + 0.15 m margin (§16) | **+ both** |
+|---|---:|---:|---:|---:|
+| **Success** | 89.8% | 89.3% | 89.8% | **93.8%** (CI 92.7–94.8) |
+| **Collisions** | 10.2% | 8.8% | 9.9% | **5.65%** (CI 4.7–6.7) |
+| … poles | 5.4% | 4.5% | 6.1% | **3.75%** |
+| … cylinders | 2.2% | 2.4% | 1.0% | 1.35% |
+| … walls | 1.6% | 0.9% | 1.5% | **0.15%** |
+| … boxes / side walls | 1.0 / 0.05% | 0.8 / 0.25% | 0.9 / 0.35% | 0.4 / 0% |
+| Time-out / flipped | 0 / 0% | 1.4 / 0.5% | 0 / 0.3% | 0.25 / 0.1% |
+| Pole passes within 0.2 m (median pass) | 19.6% (0.45 m) | 16.0% (0.47 m) | 22.1% (0.44 m) | **13.9% (0.53 m)** |
+| Wall passes within 0.2 m | 8.2% | 3.8% | 6.2% | 1.3% |
+| Closest pass (mean) / time to goal / path efficiency | 0.34 m / 8.2 s / 0.90 | 0.36 m / 8.3 s / 0.90 | 0.36 m / 8.3 s / 0.90 | 0.40 m / 8.5 s / 0.89 |
+
+Training, at its own 0.15 m rule: 67% / 26% at iteration 1000 (56% of envs on level 9), and **90.7% / 8.3%** at the
+end (87% on level 9), the best end-of-training numbers of any run, even under the stricter rule. At 0.15 m on the
+held-out maps it scores 90.4% / 9.2%.
+
+1. **Together they work, though neither did alone.** Collisions almost halve (10.2% → 5.65%) and success rises 4
+   points (89.8% → 93.8%). The confidence intervals don't overlap the slowdown's on either. Information alone or
+   pressure alone each moved the overall rate by at most 1.4 points. The effect is far more than additive.
+2. **The policy now gives poles room.** Pole passes within 0.2 m drop to 13.9%, and the median pole pass widens by
+   8 cm (0.45 → 0.53 m). With geometry it can rely on, the margin pressure finally reaches poles. Walls, the other
+   obstacle that the ring sees in pieces at a door's edges, nearly disappear (1.6% → 0.15%).
+3. **What's left of poles changed shape.** 69% of the remaining pole hits were on a line clearing the pole by ≥ 10 cm
+   500 ms before impact (35% for the slowdown), and they happen slower (1.9 against 2.7 m/s). So most of what's
+   left is drifting into a pole while manoeuvring, not shaving past one.
+4. **The cost is small:** 0.2 s more to the goal, path efficiency 0.89 against 0.90.
+5. **Exit criterion:** success (93.8% ≥ 90%) is met; collisions (5.65% against < 5%) aren't quite, and the CI
+   (4.7–6.7%) straddles the target. That's one seed. §10.2 showed seed-to-seed spread of about ±1 point on
+   collisions, so this needs seeds 1 and 2 before it counts.
+
+**What it means for the plan.** The Phase 2 teacher is privileged by design (PLAN.md §4.2), so it should carry the
+nearest-obstacle geometry, which the Phase 3 depth student will learn to do without. One thing to keep in mind for
+distillation: the student gets the lidar/depth view only, which §11–16 showed doesn't place poles precisely. The
+student will need memory (the GRU) or more resolution to match the teacher on poles.
+
+**Infrastructure.** W&B dropped the same three summary keys again (two runs out of two today, so it's systematic,
+not a one-off). The launcher's new restore step (§16) caught it and the evaluations ran. But the first evaluation
+started 2 s after the restore, still read the old summary, and skipped its Hugging Face upload. `play.py` now reads
+`final_checkpoint` and `hf_url` through `scripts/wandb_summary.py`, which falls back to the uploaded
+`wandb-summary.json` (`846b24c`). That evaluation was re-run play-only and reproduced 93.80% / 5.65% exactly. Kit
+shut down normally on both boxes. Cost: $0.99 training with both evaluations, plus $0.55 for the re-run.
+
+**Next:** seeds 1 and 2 of this configuration, with the same evaluation, to check against the exit criterion.
 
