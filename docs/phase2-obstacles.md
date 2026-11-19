@@ -29,6 +29,8 @@ Status:
   collisions aren't mainly about sensing or information.
 - [x] Pole near misses (§15): most pole hits are grazes, not head-on crashes. The policy passes poles within
   0.2 m three to six times as often as any other obstacle, even with exact positions. Next: clearance pressure.
+- [x] Training with a 0.15 m collision margin (§16): halves cylinder hits, but poles are unchanged (6.1%) and so is
+  the overall rate (89.8% / 9.9%). The policy keeps more room from large obstacles, not from poles.
 - [ ] Ablations
 
 ## 1. Obstacle terrain
@@ -817,4 +819,63 @@ impact, 79% of cylinder hits are on a line straight through the cylinder: those 
   larger weight. §6's sweep only went the other way (σ = 0.6 m, weight 3, or both), which spreads the
   penalty further out instead of concentrating it on near misses.
 - Slowing down near poles specifically addresses only the head-on quarter, so it comes after these.
+
+## 16. A larger collision margin in training
+
+§15's proposal: train with `collision_radius=0.15` and evaluate at 0.1 m, so the 0.1–0.15 m grazes that are
+over-represented for poles become training crashes. `collision_radius` also offsets the proximity term and the
+slowdown's clearance, so both shaping terms move out by 5 cm with it.
+
+`p2-slow-margin15-s42` ([8z4i2c6p](https://forge.coreweave.com/wandb/vedssharma1/isaac-rl/runs/8z4i2c6p), commit
+`1c2e99e`): the mild slowdown, seed 42, 4096 envs, 1500 iterations, curriculum on, `env.collision_radius=0.15`. It
+was evaluated on the 60 held-out level-5 layouts (2000 episodes, attribution on) at the usual 0.1 m rule
+(`eval_heldout60_l5`) and at its own 0.15 m (`eval_heldout60_l5_r15`). It's compared with the same settings at 0.1 m
+([mh19cygo](https://forge.coreweave.com/wandb/vedssharma1/isaac-rl/runs/mh19cygo), §10 and §15):
+
+| | Trained at 0.1 m | Trained at 0.15 m |
+|---|---:|---:|
+| Training at iteration 1000: success / collisions (envs on level 9) | 64% / 25% (57%) | 69% / 26% (42%) |
+| End of training: success / collisions (envs on level 9), at its own margin | 87.3% / 10.3% (84%) | 79.7% / 15.3% (74%) |
+| **Held-out level 5 at 0.1 m: success / collisions** | **89.8% / 10.2%** | **89.8% / 9.9%** |
+| … poles / cylinders / walls / boxes / side walls | 5.4 / 2.2 / 1.6 / 1.0 / 0.1% | **6.1** / **1.0** / 1.5 / 0.9 / 0.4% |
+| Held-out level 5 at 0.15 m: success / collisions | | 83.9% / 15.9% |
+| Closest pass (mean) / speed near obstacles / time to goal | 0.34 m / 2.75 m/s / 8.2 s | 0.36 m / 2.70 m/s / 8.3 s |
+
+Closest pass per episode, held-out at 0.1 m, over episodes that came within 1 m of that kind (as in §15):
+
+| Within 0.2 m of… | Trained at 0.1 m | Trained at 0.15 m | Median pass, 0.1 m → 0.15 m |
+|---|---:|---:|---:|
+| **pole** | 19.6% | **22.1%** | 0.45 → 0.44 m |
+| cylinder | 5.8% | 4.9% | 0.51 → 0.57 m |
+| box | 3.4% | 2.7% | 0.56 → 0.64 m |
+| wall | 8.2% | 6.2% | 0.45 → 0.46 m |
+
+1. **No overall gain.** Held-out success and collisions are the same as at 0.1 m (89.8% / 9.9% against 89.8% /
+   10.2%, CIs almost identical). The exit criterion is still not met.
+2. **The margin moved the policy away from large obstacles, not from poles.** Cylinder hits halve (2.2% → 1.0%), and
+   the median pass widens by 6 cm for cylinders and 8 cm for boxes. For poles nothing moves: hits 5.4% → 6.1%,
+   passes within 0.2 m 19.6% → 22.1%, median pass unchanged. On one seed and about 1050 pole passes, the pole
+   differences are within noise (about 1.5 standard errors), so read it as "no effect on poles", not "worse".
+3. **Pole hits still look the same:** 72% are grazes at impact (80% at 0.1 m), a third are on a line through the
+   pole 250 ms out, and the speed at a pole hit is a little lower (2.5 against 2.7 m/s).
+4. So the policy *can* trade path length for clearance, and does it for the obstacles it sees well. A training
+   penalty on 0.1–0.15 m passes doesn't make it give poles more room. The simplest reading is that it doesn't know
+   precisely where a pole's surface is when it passes. Within range, a pole falls between the 10° rays 65% of the
+   time (§11). When it is returned, the single ray only places it within about ±5° (±9 cm at 1 m), which is as
+   large as the margin being asked for. That doesn't square with §13, where exact geometry of the 4 nearest
+   obstacles barely helped (16% of pole passes within 0.2 m). That experiment gave information without extra
+   pressure, and this one gives pressure without extra information.
+
+**Infrastructure.** The launcher's verify step failed on this run, so the evaluations had to be launched
+separately (play-only, about $0.70 extra). W&B's run summary was missing `final_checkpoint`, `hf_url` and
+`training_time_s`. The `wandb-summary.json` the client uploaded had all three, and the checkpoint was on W&B and
+HF. That looks like a server-side merge race on the W&B server. The run's summary was repaired by hand, and
+`launch.py` now restores missing keys from that file before verifying (`0ed0406`). Kit shut down normally on all
+three boxes. Cost: $0.95 training + $0.55 + $0.15 evaluations.
+
+**Next: information and pressure together.** Train with the 0.15 m margin *and* `nearest_obstacles_obs=4` (§13), one
+seed, same evaluation. If pole passes within 0.2 m drop well below 16–22%, poles need both, and the Phase 2 teacher
+should carry the privileged geometry. If they don't, it's time to stop tuning the teacher for poles: either accept
+the 89.8% / ~10% teacher and start Phase 3 (whose GRU is the other lead for poles), or relax the exit criterion for
+poles explicitly.
 
