@@ -398,3 +398,66 @@ def test_nearest_footprint_returns_the_obstacle():
     kind, d, _, o = of.nearest_footprint(lay, (10.0, 5.5))
     assert kind == "cylinder" and o is cyl and d == pytest.approx(0.2)
     assert of.nearest_footprint(lay, (3.0, P.inner_y[0] + 0.05))[3] is None  # side wall
+
+
+# -- near misses
+
+
+def test_straight_line_miss():
+    pos, vel = np.zeros((1, 2)), np.array([[3.0, 0.0]])  # at the origin, flying along +x
+    pole = lambda x, y: of.Obstacle("pole", (x, y), radius=0.04)  # noqa: E731
+    assert of.straight_line_miss(pole(2.0, 0.05), pos, vel)[0] == pytest.approx(0.01)  # grazes by 1 cm
+    assert of.straight_line_miss(pole(2.0, -0.3), pos, vel)[0] == pytest.approx(0.26)  # clear, on the right
+    assert of.straight_line_miss(pole(2.0, 0.0), pos, vel)[0] == pytest.approx(-0.04)  # through its centre
+    # Moving away, or hovering: it passes closest where it is now.
+    assert of.straight_line_miss(pole(-2.0, 0.5), pos, vel)[0] == pytest.approx(np.hypot(2.0, 0.5) - 0.04)
+    assert of.straight_line_miss(pole(2.0, 0.0), pos, np.zeros((1, 2)))[0] == pytest.approx(1.96)
+    with pytest.raises(ValueError):
+        of.straight_line_miss(of.Obstacle("box", (2.0, 0.0), half_extents=(0.2, 0.2)), pos, vel)
+
+
+def test_straight_line_miss_matches_sampling_the_line():
+    rng = np.random.default_rng(0)
+    pos, vel = rng.uniform(-3, 3, (200, 2)), rng.normal(size=(200, 2))
+    o = of.Obstacle("cylinder", (0.5, -0.2), radius=0.3)
+    s = np.linspace(0.0, 20.0, 20001)  # the half-line, far beyond the obstacle, at 1 mm
+    u = vel / np.linalg.norm(vel, axis=1, keepdims=True)
+    pts = pos[:, None, :] + s[None, :, None] * u[:, None, :]
+    sampled = np.linalg.norm(pts - np.array(o.center), axis=-1).min(axis=1) - o.radius
+    np.testing.assert_allclose(of.straight_line_miss(o, pos, vel), sampled, atol=2e-3)
+
+
+def test_near_miss_summary():
+    # 1 s at 50 Hz along +x at 2.5 m/s, straight at a pole 2 cm off the line, then a sideways dodge (+y, away from
+    # it) in the last 0.25 s: too late, it ends 9 cm from the pole's surface.
+    dt, n = 0.02, 50
+    t = np.arange(n) * dt
+    pos = np.stack([2.5 * (t - t[-1]), np.where(t > t[-1] - 0.25, 0.4 * (t - (t[-1] - 0.25)), 0.0)], axis=1)
+    vel = np.stack([np.full(n, 2.5), np.where(t > t[-1] - 0.25, 0.4, 0.0)], axis=1)
+    pole = of.Obstacle("pole", (0.13, 0.02), radius=0.06)
+    out = of.near_miss_summary(pole, pos, vel, dt)
+    assert set(out) == set(of.NEAR_MISS_METRICS)
+    assert out["radius"] == 0.06
+    assert of._point_footprint_distance(pole, pos[-1])[0] < 0.1  # within the collision radius
+    assert out["speed"] == pytest.approx(np.hypot(2.5, 0.4))
+    # The pole is 32 degrees right of +x, the velocity 9 degrees left of it.
+    assert out["approach_deg"] == pytest.approx(math.degrees(math.atan2(0.08, 0.13) + math.atan2(0.4, 2.5)))
+    assert out["line_miss_500ms"] == pytest.approx(0.02 - 0.06)  # was flying straight into it
+    assert out["line_miss_0ms"] > 0.0  # the dodge clears the line, but it's already within the collision radius
+    # A box: no line miss or radius, but an approach angle; a short trace: no 500 ms line miss.
+    box = of.near_miss_summary(of.Obstacle("box", (0.3, 0.0), half_extents=(0.1, 0.1)), pos, vel, dt)
+    assert np.isnan(box["radius"]) and np.isnan(box["line_miss_0ms"]) and not np.isnan(box["approach_deg"])
+    short = of.near_miss_summary(pole, pos[-10:], vel[-10:], dt)
+    assert np.isnan(short["line_miss_500ms"]) and not np.isnan(short["line_miss_0ms"])
+
+
+def test_pack_tile_kinds_follow_pack_tiles():
+    p = of.ObstacleFieldParams()
+    tiles = {(0, i): of.generate_layout(p, d, of.layout_rng(i, d)) for i, d in enumerate((0.35, 0.95))}
+    packed = of.pack_tiles(tiles, 1, 2)
+    kinds = of.pack_tile_kinds(tiles, 1, 2, packed["valid"].shape[-1])
+    assert kinds.shape == packed["valid"].shape
+    assert ((kinds >= 0) == packed["valid"]).all()
+    for (_, c), layout in tiles.items():
+        names = [of.ATTRIBUTION_KINDS[k] for k in kinds[0, c] if k >= 0]
+        assert names == [o.kind for o in of.layout_footprints(layout)]

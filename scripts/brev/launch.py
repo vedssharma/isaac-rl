@@ -38,7 +38,9 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import brevcli
+import wandb_summary
 from brevcli import BrevError, brev, get_instance, ssh
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -121,6 +123,28 @@ def hydra_key(arg: str) -> str | None:
     if not eq or arg.startswith("-") or not key.lstrip("+~").startswith(("env.", "agent.")):
         return None
     return key.lstrip("+~")
+
+
+def restore_summary_keys(run, keys: tuple[str, ...]) -> list[str]:
+    """Copy `keys` missing from a W&B run's summary back from its wandb-summary.json file, and return those restored.
+
+    The W&B server sometimes drops keys from a run's summary that the client wrote just before wandb.finish(),
+    though the summary file it uploaded has them (p2-slow-margin15-s42, 2026-11-19). play.py reads final_checkpoint
+    and hf_url from the summary, so they're put back. Never raises."""
+    missing = [k for k in keys if run.summary.get(k) is None]
+    if not missing:
+        return []
+    saved = wandb_summary.saved_summary(run)
+    restored = {k: saved[k] for k in missing if saved.get(k) is not None}
+    if not restored:
+        log(f"verify: couldn't restore {missing} from wandb-summary.json")
+        return []
+    try:
+        run.summary.update(restored)
+    except Exception as e:  # noqa: BLE001
+        log(f"verify: couldn't write {list(restored)} back to the W&B summary: {e}")
+    log(f"verify: restored {', '.join(restored)} to the W&B summary from wandb-summary.json")
+    return list(restored)
 
 
 def eval_play_overrides(train_args: list[str], eval_overrides: list[str]) -> list[str]:
@@ -489,6 +513,7 @@ echo "started pid $!"
             log(f"verify: W&B run {path} not found: {e}")
             return False
         self.record["wandb_url"] = run.url
+        restore_summary_keys(run, ("final_checkpoint", "hf_url", "training_time_s"))
         ckpt, hf_url = run.summary.get("final_checkpoint"), run.summary.get("hf_url")
         self.record["final_checkpoint"], self.record["hf_url"] = ckpt, hf_url
         problems = []

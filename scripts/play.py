@@ -34,6 +34,7 @@ from isaaclab.app import AppLauncher
 # local imports
 import cli_args  # isort: skip
 import kit_exit  # isort: skip
+import wandb_summary  # isort: skip
 
 parser = argparse.ArgumentParser(description="Evaluate an RL agent trained with RSL-RL.")
 parser.add_argument("--task", type=str, required=True, help="Name of the task.")
@@ -99,7 +100,7 @@ def fetch_wandb_checkpoint(run_ref: str) -> tuple[Path, object]:
     if run_ref.count("/") != 2:
         run_ref = f"{os.environ['WANDB_ENTITY']}/{os.environ['WANDB_PROJECT']}/{run_ref}"
     run = wandb.Api(timeout=60).run(run_ref)
-    name = run.summary.get("final_checkpoint")
+    name = wandb_summary.summary_value(run, "final_checkpoint")
     if not name:
         ckpts = [f.name for f in run.files() if re.fullmatch(r"model_\d+\.pt", f.name)]
         if not ckpts:
@@ -133,6 +134,8 @@ def summarize(logs: dict[str, list[torch.Tensor]], n_target: int) -> dict:
             out[key] = {"rate": p, "ci95": [lo, hi]}
         else:
             out[key] = {"mean": values.mean().item() if len(values) else float("nan"), "n": len(values)}
+            if key.startswith("NearMiss/"):  # distributions, not only means (docs/phase2-obstacles.md §15)
+                out[key]["values"] = [round(v, 4) for v in values.tolist()]
     return out
 
 
@@ -148,7 +151,8 @@ def print_summary(summary: dict) -> None:
 
 def upload_results(out_dir: Path, run, name: str) -> None:
     """<name>.json and videos/<name>/ next to the run's checkpoint on HF (from the run's hf_url); never raises."""
-    repo_id, token, hf_url = os.environ.get("HF_REPO_ID"), os.environ.get("HF_TOKEN"), run.summary.get("hf_url")
+    repo_id, token = os.environ.get("HF_REPO_ID"), os.environ.get("HF_TOKEN")
+    hf_url = wandb_summary.summary_value(run, "hf_url")
     if not (repo_id and token and hf_url):
         print("[WARN] No HF_REPO_ID / HF_TOKEN / hf_url in the run summary; skipping the HF upload.")
         return

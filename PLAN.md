@@ -234,11 +234,13 @@ Each phase ends with a **demo video + W&B report**. Don't move on until the exit
 - **Exit:** ≥ 98% of episodes reach random goals 10–20 m away; smooth flight in the video.
 
 ### Phase 2 — Obstacles with privileged sensing (weeks 3–5)
-- [ ] Procedural obstacle terrain generator (§5.1–5.2A) + unit tests (gaps ≥ min width, spawn/goal free)
-- [ ] Ray-cast lidar-ring observation; collision detection; proximity reward
-- [ ] Curriculum (§5.3); evaluation script on held-out maps
-- [ ] Ablations: (a) no proximity shaping, (b) no curriculum, (c) number of rays, (d) 3 seeds each
-- **Exit (teacher):** ≥ 90% success, < 5% collisions at difficulty 5 on held-out maps.
+- [x] Procedural obstacle terrain generator (§5.1–5.2A) + unit tests (gaps ≥ min width, spawn/goal free)
+- [x] Ray-cast lidar-ring observation; collision detection; proximity reward
+- [x] Curriculum (§5.3); evaluation script on held-out maps
+- [ ] Ablations: (a) no proximity shaping, (b) no curriculum, (c) number of rays, (d) 3 seeds each — partly done
+      (docs/phase2-obstacles.md §6, §8); the rest move to Phase 5
+- **Exit (teacher):** ≥ 90% success, < 5% collisions at difficulty 5 on held-out maps. **Closed 2026-11-19 at 91.0% /
+  7.5% (3 seeds)**, collisions not met; the teacher is p2-slow-margin15-nearest4-s42 (docs/phase2-obstacles.md §18).
 
 ### Phase 3 — Depth-based student (weeks 6–8)
 - [ ] `RayCasterCamera` depth + noise model; CNN encoder

@@ -193,3 +193,11 @@ def test_nearest_obstacle_observation():
     torch.testing.assert_close(obs[0, 3:6], torch.tensor([0.0, -1.0, 0.4]), atol=1e-6, rtol=0)
     # The third closest is 6 m away, beyond max_range: reads as "nothing there".
     torch.testing.assert_close(obs[0, 6:9], torch.tensor([0.0, 0.0, 1.0]))
+
+
+def test_closest_by_kind():
+    inf = float("inf")
+    dist = torch.tensor([[0.5, 0.2, 0.9, inf], [1.0, 3.0, 0.4, 2.0]])
+    kinds = torch.tensor([[0, 2, 0, -1], [2, 2, 1, -1]])
+    out = mdp.closest_by_kind(dist, kinds, 4)
+    torch.testing.assert_close(out, torch.tensor([[0.5, inf, 0.2, inf], [inf, 0.4, 1.0, inf]]))
