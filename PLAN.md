@@ -249,8 +249,8 @@ Each phase ends with a **demo video + W&B report**. Don't move on until the exit
       teacher, and train with supervised loss. This is usually fastest and most stable.
 - [ ] **Option B — End-to-end PPO from depth** with an asymmetric critic. Compare against A; it's a good write-up result.
 - [ ] Add a GRU memory; test on maps with obstacles behind corners / outside the FOV
-- **Exit (G3):** ≥ 85% success at difficulty 5 from depth only. **94.4% on one seed (2026-11-20,
-  docs/phase3-depth-student.md §6), with a teacher that faces where it flies; seeds 1 and 2 pending.**
+- **Exit (G3):** ≥ 85% success at difficulty 5 from depth only. **Met 2026-11-20: 93.4% ± 2.6 over 3 seeds (worst
+  90.5%), distilled from teachers that face where they fly (docs/phase3-depth-student.md §6.1).**
 
 ### Phase 4 — Robustness and difficulty (weeks 9–10)
 - [ ] Domain randomization (§5.5), wind, latency, motor lag

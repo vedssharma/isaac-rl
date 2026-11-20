@@ -12,8 +12,8 @@ Status:
 - [x] First distillation: **3.6% success** on held-out level 5. The teacher flies backwards: its direction of
   travel is inside a forward camera's view 1.9% of the time (§4)
 - [x] A teacher that faces where it flies (§5): its direction of travel is in view 98.6% of the time, 89.2% / 7.05%
-- [x] Distilled from it (§6): **94.4% success, 2.7% collisions** on held-out level 5 from depth alone, one seed.
-  G3's ≥ 85% is met on this seed; it needs seeds 1 and 2 before it counts (PLAN.md §7)
+- [x] Distilled from it (§6): 94.4% success, 2.7% collisions on held-out level 5 from depth alone (seed 42)
+- [x] **Three seeds (§6.1): 93.4% ± 2.6 success, 4.9% ± 3.9 collisions; every seed ≥ 90.5%. G3 is met.**
 - [ ] Option B: PPO from depth with an asymmetric critic
 - [ ] GRU memory
 - **Exit (G3):** ≥ 85% success at difficulty 5 from depth only.
@@ -281,7 +281,59 @@ for 6 minutes after the evaluation had finished (the box idle meanwhile), then c
 same kind of stall as the 18-minute one on 2026-11-16, still unexplained.
 
 **Next:**
-1. Seeds 1 and 2: heading teacher, then distillation, about $2 per seed.
+1. Seeds 1 and 2: heading teacher, then distillation, about $2 per seed (§6.1).
 2. The climbing failure: watch a video, and find where it happens.
 3. Then PLAN.md's remaining Phase 3 items (PPO from depth as Option B, a GRU), or straight on to Phase 4's
    robustness tests with this student.
+
+### 6.1 Three seeds: G3 holds
+
+Seeds 1 and 2 of both steps, run exactly like seed 42: a heading teacher
+([bmwgnzwe](https://forge.coreweave.com/wandb/vedssharma1/isaac-rl/runs/bmwgnzwe) s1,
+[1ec6vo8c](https://forge.coreweave.com/wandb/vedssharma1/isaac-rl/runs/1ec6vo8c) s2), then a student distilled from
+that seed's teacher ([sfzu8umn](https://forge.coreweave.com/wandb/vedssharma1/isaac-rl/runs/sfzu8umn) s1,
+[nqbifc1z](https://forge.coreweave.com/wandb/vedssharma1/isaac-rl/runs/nqbifc1z) s2). Commit `db794ff`. Same 60
+held-out level-5 layouts, about 2000 episodes each, 0.1 m rule, depth noise on for the students.
+
+| Held-out level 5 | Teachers: s42 / s1 / s2 | Mean ± SD | **Students: s42 / s1 / s2** | **Mean ± SD** |
+|---|---|---:|---|---:|
+| **Success** | 89.2 / 92.6 / 91.75 | 91.2 ± 1.8 | 94.4 / 90.5 / 95.3 | **93.4 ± 2.6** |
+| **Collisions** | 7.05 / 7.35 / 5.65 | 6.7 ± 0.9 | 2.7 / 9.4 / 2.65 | **4.9 ± 3.9** |
+| … poles | 2.9 / 4.45 / 3.05 | 3.5 | 2.25 / 5.9 / 2.45 | 3.5 |
+| … cylinders | 1.8 / 0.9 / 1.8 | 1.5 | 0.3 / 0.7 / 0.15 | 0.4 |
+| … boxes / walls | 0.95, 0.5 / 0.3, 0.8 / 0.35, 0.4 | | 0.05, 0.05 / 0.2, 0 / 0, 0 | |
+| … side walls | 0.9 / 0.9 / 0.05 | 0.6 | 0.05 / 2.6 / 0.05 | 0.9 |
+| Too high (above 4 m) | 2.3 / 0 / 1.6 | 1.3 | 2.85 / 0 / 1.3 | 1.4 |
+| Direction of travel in view | 98.6 / 95.9 / 98.6 | | 98.7 / 95.7 / 99.1 | |
+| End of training: success (envs on level 9) | | | 95.5 (94) / 79.9 (69) / 91.7 (84) | |
+
+All in % of episodes. SD is across seeds.
+
+1. **G3 is met:** at least 85% success at difficulty 5 on held-out maps from depth images only, on every seed. The worst
+   seed is at 90.5% (CI 89.1–91.7), and the mean is 93.4%. PLAN.md §1's headline goal is reached.
+2. **The student matches or beats its teacher** on two seeds of three, and on average (93.4% against 91.2% success).
+   Collisions are lower on average (4.9% against 6.7%) but vary much more. The seed-1 student is the weak one
+   (9.4%, mostly poles and side walls), and its teacher was the weakest on poles (4.45%) and faced forward least
+   (95.9%). A student is only as good as what its teacher shows it.
+3. **Poles are again the main residual,** at 3.5% for both teachers and students. Everything else is near zero for
+   two of the three students.
+4. **Climbing out the top is inherited seed by seed:** the seed-1 teacher never climbs and neither does its student;
+   s42 2.3 → 2.85, s2 1.6 → 1.3. It's a teacher behaviour that the heading term introduced (the old teachers never
+   climbed), not something distillation adds.
+
+**Infrastructure:**
+- **The seed-1 student's box hung during its evaluation.** The run itself was fine: training finished and the
+  checkpoint was verified on W&B and Hugging Face. Then play.py started, and the box stopped answering ssh
+  ("connection timed out during banner exchange") while Brev still listed it RUNNING. The launcher waited on ssh
+  for about 75 minutes. I deleted the box by hand, the launcher gave up, and the evaluation was re-run on a fresh
+  box ($0.68). The hung box ran 2.3 h, about $5.05.
+- **The seed-2 student's Nebius delete took 33 minutes** ($3.39 for that run).
+- The launcher's ssh calls need a timeout and a cap on how long it waits for an unreachable box. That's not fixed
+  yet.
+
+Cost of the two seeds: teachers $0.68 + $0.93, students $5.05 + $3.39, evaluation re-run $0.68, about $10.70 in all.
+
+**Where Phase 3 stands:** Option A (distillation) meets G3. PLAN.md's remaining Phase 3 items are Option B (PPO from
+depth with an asymmetric critic, as a comparison) and a GRU. Neither is needed for G3; both are write-up material.
+The climbing (1.4%) and the residual poles are the obvious things to look at in videos before Phase 4 (robustness).
+
