@@ -244,12 +244,13 @@ Each phase ends with a **demo video + W&B report**. Don't move on until the exit
 
 ### Phase 3 — Depth-based student (weeks 6–8)
 - [x] `RayCasterCamera` depth + noise model (docs/phase3-depth-student.md §1–2)
-- [ ] CNN encoder
-- [ ] **Option A — Teacher→student distillation (DAgger):** roll out the student, label actions with the frozen
+- [x] CNN encoder (docs/phase3-depth-student.md §3)
+- [x] **Option A — Teacher→student distillation (DAgger):** roll out the student, label actions with the frozen
       teacher, and train with supervised loss. This is usually fastest and most stable.
 - [ ] **Option B — End-to-end PPO from depth** with an asymmetric critic. Compare against A; it's a good write-up result.
 - [ ] Add a GRU memory; test on maps with obstacles behind corners / outside the FOV
-- **Exit (G3):** ≥ 85% success at difficulty 5 from depth only.
+- **Exit (G3):** ≥ 85% success at difficulty 5 from depth only. **Met 2026-11-20: 93.4% ± 2.6 over 3 seeds (worst
+  90.5%), distilled from teachers that face where they fly (docs/phase3-depth-student.md §6.1).**
 
 ### Phase 4 — Robustness and difficulty (weeks 9–10)
 - [ ] Domain randomization (§5.5), wind, latency, motor lag

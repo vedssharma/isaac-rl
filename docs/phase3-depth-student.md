@@ -8,7 +8,12 @@ Status:
 
 - [x] `Drone-Nav-Depth-v0`: a ray-cast depth camera, a noise model, and the teacher's observation alongside (§1)
 - [x] The camera checked against exact geometry on 1024 drones: 99.97% of pixels agree (§2)
-- [ ] CNN student and `scripts/distill.py` (DAgger from the frozen teacher)
+- [x] CNN student and `scripts/distill.py` (DAgger from the frozen teacher) (§3)
+- [x] First distillation: **3.6% success** on held-out level 5. The teacher flies backwards: its direction of
+  travel is inside a forward camera's view 1.9% of the time (§4)
+- [x] A teacher that faces where it flies (§5): its direction of travel is in view 98.6% of the time, 89.2% / 7.05%
+- [x] Distilled from it (§6): 94.4% success, 2.7% collisions on held-out level 5 from depth alone (seed 42)
+- [x] **Three seeds (§6.1): 93.4% ± 2.6 success, 4.9% ± 3.9 collisions; every seed ≥ 90.5%. G3 is met.**
 - [ ] Option B: PPO from depth with an asymmetric critic
 - [ ] GRU memory
 - **Exit (G3):** ≥ 85% success at difficulty 5 from depth only.
@@ -107,3 +112,228 @@ loop will be our own script, as PLAN.md §8 already names it:
 - a small CNN encoder (64-d latent) on the depth image, concatenated with the 18 goal/proprioception inputs, into
   an MLP; a GRU comes after;
 - load the teacher from its RSL-RL checkpoint, including its observation normalizer.
+
+
+## 3. The student and DAgger distillation
+
+**The student** (`drone_nav/policies/depth_student.py`, 0.35M parameters) has three parts:
+- **CNN encoder:** four stride-2 convolutions (32, 64, 64, 128 channels; 5×5 then 3×3, ELU) turn the 48×64 depth
+  image into a 64-d latent.
+- **Normalizer:** a running normalizer on the 18 goal and motion inputs, like RSL-RL's empirical normalization.
+- **MLP:** 256, 256, 128 → the 4 CTBR actions.
+
+It is pure torch, with CPU tests for the normalizer, the observation split (row-major image), checkpoints and a
+small end-to-end fit.
+
+**Distillation** (`scripts/distill.py`) is DAgger:
+- Each iteration rolls out 24 steps in every env.
+- The executed action is the teacher's with probability β, else the student's. β falls linearly from 1 to 0 over
+  the first 100 iterations.
+- Every visited state is labelled with the frozen teacher's action. RSL-RL computes it from the env's `teacher`
+  observation group (`obs_groups = {"policy": ["teacher"], ...}`), so the teacher runs exactly as in training and
+  evaluation.
+- The student is fitted to the labels clamped to [−1, 1] with MSE: 2 epochs of 4 minibatches per rollout, Adam
+  at 5e-4, gradient clipping at 1.0.
+- The curriculum follows whoever flies.
+
+RSL-RL 3.1.2's own `DistillationRunner` couldn't be used: its `StudentTeacher` is MLP-only. W&B, checkpoints, the
+Hugging Face upload and the summary keys work as in `train.py`, so `launch.py --script distill` verifies the run.
+`play.py` recognises a student checkpoint and evaluates it like any policy.
+
+**Smoke run** (`p3-distill-smoke-s42`, 1024 envs, 30 iterations, $0.35): the whole pipeline ran, from teacher
+loading through training, verification and evaluation of the student on held-out maps.
+
+**First run** (`p3-distill-s42`,
+[oadiizgu](https://forge.coreweave.com/wandb/vedssharma1/isaac-rl/runs/oadiizgu), commit `7cc0553`): 4096 envs,
+1000 iterations, 2.1 s per iteration (47k samples/s), 35 minutes, $1.37.
+
+| Iteration | Teacher share β | Imitation loss | Training success / collisions | Envs mostly on |
+|---:|---:|---:|---:|---|
+| 50 | 0.50 | 0.004 | 100% / 0% | level 0 |
+| 100 | 0.00 | 0.048 | 87% / 13% | level 1 |
+| 250 | 0 | 0.063 | 50% / 51% | levels 1–3 |
+| 500 | 0 | 0.064 | 51% / 49% | levels 1–3 |
+| 999 | 0 | 0.062 | 48% / 52% | levels 1–3 |
+
+Held-out level 5 (60 layouts, 2000 episodes, 0.1 m rule): **3.6% success, 96.4% collisions**. By obstacle:
+walls 40.8%, boxes 27.5%, cylinders 23.4%, poles 3.6%, side walls 1.1%. Mean speed 2.7 m/s; collisions come
+0.46 s after something is first within 1 m.
+
+The student learns the teacher well while the teacher is flying (loss 0.004). Once it flies alone, the loss
+settles 15 times higher and it never gets past level 3, where the teacher is at nearly 100%. That is a student that
+can't see what the teacher reacts to, not one that lacks training: nothing improved over the last 750 iterations.
+
+## 4. Why: the teacher flies backwards
+
+The teacher's lidar ring is fixed in the world (Phase 2 §11), and its nearest-obstacle input covers every
+direction. So its heading doesn't matter to it, and nothing in its reward asks it to face where it flies. Drones
+spawn with a random heading, and a quadrotor flies in any direction without turning. The student's camera only
+covers 90° ahead.
+
+To measure it, `Drone-Nav-Obstacles-v0` now logs, over the steps a drone moves faster than 0.5 m/s:
+- `Metrics/heading_travel_angle_deg`: the angle between its heading (body +x, where the camera points) and its
+  direction of travel;
+- `Metrics/travel_in_camera_fov`: the share of those steps the direction of travel is within ±45° of the heading,
+  i.e. inside the camera's view.
+
+(Commit `536c7f2`, with a CPU test; the yaw convention is the one the camera check and the lidar code already use.)
+
+The teacher on the 60 held-out level-5 layouts (`p3-teacher-heading-eval-s42`, $0.18; it reproduces 93.8% / 5.65%
+exactly):
+
+| | Teacher |
+|---|---:|
+| Mean angle between heading and travel | **122°** |
+| Moving steps with the direction of travel in a forward camera's view | **1.9%** |
+
+A random heading held still would give 90° and 25%. The teacher does worse than that: it mostly flies with its tail
+forward. A forward camera on this teacher sees where it's going on about 1 step in 50, so the student is asked
+to copy reactions to obstacles it cannot see. That is consistent with everything in §3: it imitates well while the
+teacher drives, then stalls at about 50% on easy levels and crashes into walls (whose doors it never sees) most of
+all. No student architecture fixes this, and neither does a GRU, since the camera never sees the obstacle in the
+first place.
+
+## 5. A teacher that faces where it flies
+
+(The plan as first written, kept for the record; the results follow it.)
+
+The fix belongs in the teacher (PLAN.md's teacher is privileged, but it still has to be imitable from the student's
+viewpoint). Proposal:
+
+1. **A heading term in the obstacle task's reward:** `−w × (1 − cos(heading_travel_angle))` per second while moving,
+   off by default so Phase 2 runs reproduce. Possibly also spawn facing the goal (± some noise) so the policy
+   doesn't have to learn a 180° turn first.
+2. **Retrain the teacher** with the §17 settings (0.15 m margin, 4 nearest obstacles, mild slowdown) plus the
+   heading term. One seed first, about $1. Check `travel_in_camera_fov` (aim for > 90%) and that success and
+   collisions stay near 93.8% / 5.65%. The heading term may cost some of either.
+3. **Distil again** into the same student and compare with §3's 3.6%.
+
+The alternative, a 360° camera rig for the student, would sidestep the problem but drops PLAN.md's single forward
+camera, and real small drones don't carry one.
+
+**What was built** (commit `76d716f`): `env.rewards.heading` (default 0.0, so earlier runs reproduce) adds
+`−w × (1 − cos θ)` per second, where θ is the angle between heading and travel. The term is scaled by
+min(speed / 1 m/s, 1), so hovering and slow manoeuvres cost little whatever the heading. At w = 1, flying tail-first
+at speed costs 2 per second, about 16 over a typical episode against roughly +20 for progress. A 30° sideways
+component for a dodge costs 0.13 per second. Spawn headings stay random. A CPU test covers the term.
+
+**The teacher** (`p3-teacher-heading-s42`, [b04mrdoo](https://forge.coreweave.com/wandb/vedssharma1/isaac-rl/runs/b04mrdoo)):
+the §17 settings (0.15 m training margin, 4 nearest obstacles, mild slowdown) plus `env.rewards.heading=1.0`, seed
+42, 1500 iterations, 10 minutes, $0.49. It learned to face forward almost at once: by iteration 100 its direction
+of travel was in view 94% of the time, with a mean angle of 14°.
+
+| Held-out level 5, 60 layouts, at 0.1 m | Old teacher (seed 42) | Old teacher (3 seeds) | **Heading teacher** |
+|---|---:|---:|---:|
+| Success | 93.8% | 91.0% | **89.2%** (CI 87.8–90.5) |
+| Collisions | 5.65% | 7.5% | **7.05%** (CI 6.0–8.3) |
+| … poles / cylinders / boxes / walls / side walls | 3.75 / 1.35 / 0.4 / 0.15 / 0% | | 2.9 / 1.8 / 0.95 / 0.5 / 0.9% |
+| Too high / time-out / flipped | 0 / 0.25 / 0.1% | | 2.3 / 0.9 / 0.55% |
+| **Direction of travel in a forward camera's view** | **1.9%** | | **98.6%** |
+| Mean angle between heading and travel | 122° | | 9° |
+| Time to goal | 8.5 s | 8.4 s | 8.5 s |
+
+Facing forward costs the teacher little: it lands inside the old configuration's seed-to-seed range on both success
+and collisions (one seed). The new cost is 2.3% of episodes climbing above the 4 m ceiling, which the old teacher
+never did.
+
+## 6. Distilling the heading teacher: 94.4% from depth alone
+
+`p3-distill-heading-s42` ([jziy8wep](https://forge.coreweave.com/wandb/vedssharma1/isaac-rl/runs/jziy8wep)): the
+same student, settings and evaluation as §3's first run (4096 envs, 1000 iterations, β decaying over 100). The only
+change is the teacher: `--teacher_run b04mrdoo`. 36 minutes of training; $1.64 for the box (a 6-minute launcher
+stall included, see below).
+
+**Training**, against §3's run on the old teacher:
+
+| Iteration | Old teacher: success (envs mostly on) | **Heading teacher: success (envs mostly on)** | Imitation loss, old → new |
+|---:|---|---|---:|
+| 125 | 58% (levels 1–2) | **96%** (level 1) | 0.053 → 0.024 |
+| 300 | 46% (levels 1–3) | 96% (levels 3–4) | 0.060 → 0.026 |
+| 429 | 50% (levels 1–3) | 95% (92% on level 5) | 0.064 → 0.025 |
+| 999 | 48% (levels 1–3) | **95.5%, 3.5% collisions (94% on level 9)** | 0.062 → 0.020 |
+
+**Held-out level 5** (60 layouts, 2001 episodes, 0.1 m rule, depth noise on):
+
+| | First student (§3) | Heading teacher | **Student** |
+|---|---:|---:|---:|
+| **Success** | 3.6% | 89.2% | **94.4%** (CI 93.3–95.3) |
+| **Collisions** | 96.4% | 7.05% | **2.7%** (CI 2.1–3.5) |
+| … poles / cylinders / boxes / walls / side walls | 3.6 / 23.4 / 27.5 / 40.8 / 1.1% | 2.9 / 1.8 / 0.95 / 0.5 / 0.9% | 2.25 / 0.3 / 0.05 / 0.05 / 0.05% |
+| Too high / time-out / flipped | | 2.3 / 0.9 / 0.55% | 2.85 / 0.05 / 0% |
+| Direction of travel in view | | 98.6% | 98.7% |
+| Time to goal / mean speed / path efficiency | | 8.5 s / 2.95 m/s / 0.87 | 8.4 s / 2.95 m/s / 0.89 |
+| Closest pass (mean) | | | 0.43 m |
+
+1. **The heading was the whole problem.** With nothing else changed, the student goes from 3.6% to 94.4%. The camera
+   now sees what the teacher reacts to, so the student learns it.
+2. **G3 is met on this seed:** ≥ 85% success at difficulty 5 on held-out maps from depth images only (PLAN.md §1).
+   PLAN.md §7 wants three seeds before a claim, so seeds 1 and 2 come next, for both teacher and student.
+3. **The student beats its teacher** (94.4% / 2.7% against 89.2% / 7.05%). Plausible reasons, not yet tested:
+   - It was trained under the evaluation rule (0.1 m) on its own visited states, while the teacher trained at 0.15 m.
+   - Imitation averages away some of the teacher's riskier actions.
+   - Its collisions are almost all poles (2.25%); every other obstacle kind is at or near zero.
+4. **The one new failure is climbing:** 2.85% of episodes end above the 4 m ceiling, inherited from the heading
+   teacher (2.3%). Obstacles are 5 m tall, so climbing never helps. It's now as large as the collision rate, and
+   it's the next thing to look at (a video, and where in the corridor it happens).
+
+**Infrastructure:** W&B dropped the summary keys again, and verify restored them. The launcher's `follow` stalled
+for 6 minutes after the evaluation had finished (the box idle meanwhile), then caught up on its own. That's the
+same kind of stall as the 18-minute one on 2026-11-16, still unexplained.
+
+**Next:**
+1. Seeds 1 and 2: heading teacher, then distillation, about $2 per seed (§6.1).
+2. The climbing failure: watch a video, and find where it happens.
+3. Then PLAN.md's remaining Phase 3 items (PPO from depth as Option B, a GRU), or straight on to Phase 4's
+   robustness tests with this student.
+
+### 6.1 Three seeds: G3 holds
+
+Seeds 1 and 2 of both steps, run exactly like seed 42: a heading teacher
+([bmwgnzwe](https://forge.coreweave.com/wandb/vedssharma1/isaac-rl/runs/bmwgnzwe) s1,
+[1ec6vo8c](https://forge.coreweave.com/wandb/vedssharma1/isaac-rl/runs/1ec6vo8c) s2), then a student distilled from
+that seed's teacher ([sfzu8umn](https://forge.coreweave.com/wandb/vedssharma1/isaac-rl/runs/sfzu8umn) s1,
+[nqbifc1z](https://forge.coreweave.com/wandb/vedssharma1/isaac-rl/runs/nqbifc1z) s2). Commit `db794ff`. Same 60
+held-out level-5 layouts, about 2000 episodes each, 0.1 m rule, depth noise on for the students.
+
+| Held-out level 5 | Teachers: s42 / s1 / s2 | Mean ± SD | **Students: s42 / s1 / s2** | **Mean ± SD** |
+|---|---|---:|---|---:|
+| **Success** | 89.2 / 92.6 / 91.75 | 91.2 ± 1.8 | 94.4 / 90.5 / 95.3 | **93.4 ± 2.6** |
+| **Collisions** | 7.05 / 7.35 / 5.65 | 6.7 ± 0.9 | 2.7 / 9.4 / 2.65 | **4.9 ± 3.9** |
+| … poles | 2.9 / 4.45 / 3.05 | 3.5 | 2.25 / 5.9 / 2.45 | 3.5 |
+| … cylinders | 1.8 / 0.9 / 1.8 | 1.5 | 0.3 / 0.7 / 0.15 | 0.4 |
+| … boxes / walls | 0.95, 0.5 / 0.3, 0.8 / 0.35, 0.4 | | 0.05, 0.05 / 0.2, 0 / 0, 0 | |
+| … side walls | 0.9 / 0.9 / 0.05 | 0.6 | 0.05 / 2.6 / 0.05 | 0.9 |
+| Too high (above 4 m) | 2.3 / 0 / 1.6 | 1.3 | 2.85 / 0 / 1.3 | 1.4 |
+| Direction of travel in view | 98.6 / 95.9 / 98.6 | | 98.7 / 95.7 / 99.1 | |
+| End of training: success (envs on level 9) | | | 95.5 (94) / 79.9 (69) / 91.7 (84) | |
+
+All in % of episodes. SD is across seeds.
+
+1. **G3 is met:** at least 85% success at difficulty 5 on held-out maps from depth images only, on every seed. The worst
+   seed is at 90.5% (CI 89.1–91.7), and the mean is 93.4%. PLAN.md §1's headline goal is reached.
+2. **The student matches or beats its teacher** on two seeds of three, and on average (93.4% against 91.2% success).
+   Collisions are lower on average (4.9% against 6.7%) but vary much more. The seed-1 student is the weak one
+   (9.4%, mostly poles and side walls), and its teacher was the weakest on poles (4.45%) and faced forward least
+   (95.9%). A student is only as good as what its teacher shows it.
+3. **Poles are again the main residual,** at 3.5% for both teachers and students. Everything else is near zero for
+   two of the three students.
+4. **Climbing out the top is inherited seed by seed:** the seed-1 teacher never climbs and neither does its student;
+   s42 2.3 → 2.85, s2 1.6 → 1.3. It's a teacher behaviour that the heading term introduced (the old teachers never
+   climbed), not something distillation adds.
+
+**Infrastructure:**
+- **The seed-1 student's box hung during its evaluation.** The run itself was fine: training finished and the
+  checkpoint was verified on W&B and Hugging Face. Then play.py started, and the box stopped answering ssh
+  ("connection timed out during banner exchange") while Brev still listed it RUNNING. The launcher waited on ssh
+  for about 75 minutes. I deleted the box by hand, the launcher gave up, and the evaluation was re-run on a fresh
+  box ($0.68). The hung box ran 2.3 h, about $5.05.
+- **The seed-2 student's Nebius delete took 33 minutes** ($3.39 for that run).
+- The launcher's ssh calls need a timeout and a cap on how long it waits for an unreachable box. That's not fixed
+  yet.
+
+Cost of the two seeds: teachers $0.68 + $0.93, students $5.05 + $3.39, evaluation re-run $0.68, about $10.70 in all.
+
+**Where Phase 3 stands:** Option A (distillation) meets G3. PLAN.md's remaining Phase 3 items are Option B (PPO from
+depth with an asymmetric critic, as a comparison) and a GRU. Neither is needed for G3; both are write-up material.
+The climbing (1.4%) and the residual poles are the obvious things to look at in videos before Phase 4 (robustness).
+
