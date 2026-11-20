@@ -208,3 +208,12 @@ def test_heading_travel_angle():
     vel = torch.tensor([[2.0, 0.0], [0.0, 1.0], [0.0, 3.0], [1.0, 0.0], [-1.0, 0.0]])
     expected = torch.tensor([0.0, math.pi / 2, 0.0, math.pi, math.pi - 3.0])  # -3 rad vs pi: wraps to 0.14
     torch.testing.assert_close(mdp.heading_travel_angle(yaw, vel), expected, atol=1e-6, rtol=0)
+
+
+def test_heading_penalty():
+    angle = torch.tensor([0.0, math.pi / 2, math.pi, math.pi, math.pi])
+    speed = torch.tensor([3.0, 3.0, 3.0, 0.5, 0.0])
+    r = mdp.heading_penalty(angle, speed, full_speed=1.0, weight=2.0, step_dt=0.02)
+    # Facing travel: free. Sideways: -w per second. Backwards: -2w per second at full speed, half that at half speed.
+    torch.testing.assert_close(r, torch.tensor([0.0, -0.04, -0.08, -0.04, 0.0]), atol=1e-7, rtol=0)
+    assert (mdp.heading_penalty(angle, speed, 1.0, 0.0, 0.02) == 0).all()  # weight 0: off

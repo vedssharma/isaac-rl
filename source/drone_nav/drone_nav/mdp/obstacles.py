@@ -192,3 +192,13 @@ def heading_travel_angle(yaw: torch.Tensor, vel_xy: torch.Tensor) -> torch.Tenso
     diff = travel - yaw
     return torch.atan2(torch.sin(diff), torch.cos(diff)).abs()
 
+
+def heading_penalty(
+    angle: torch.Tensor, speed: torch.Tensor, full_speed: float, weight: float, step_dt: float
+) -> torch.Tensor:
+    """(n,) per-step reward for not facing the direction of travel: -weight * (1 - cos(angle)) per second, scaled by
+    min(speed / full_speed, 1) so that hovering and slow manoeuvres cost little whatever the heading. angle is
+    heading_travel_angle. 0 when flying straight ahead, -2 * weight per second at full speed when flying backwards."""
+    gate = (speed / full_speed).clamp(0.0, 1.0)
+    return -weight * (1.0 - torch.cos(angle)) * gate * step_dt
+
