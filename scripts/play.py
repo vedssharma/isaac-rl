@@ -8,7 +8,8 @@
 Based on IsaacLab v2.3.2 scripts/reinforcement_learning/rsl_rl/play.py, with these changes:
 
 - The checkpoint comes from a W&B run (--wandb_run <id>): its summary's final_checkpoint, the file
-  train.py recorded, instead of a guess from a directory listing. Or pass --checkpoint <path>.
+  train.py recorded, instead of a guess from a directory listing. Or pass --checkpoint <path>. A depth-student
+  checkpoint from scripts/distill.py is recognised and run on the env's "policy" observation.
 - Runs until --episodes episodes have finished (PLAN.md §7: 1000), then prints success / crash / time-out
   rates with 95% confidence intervals, time to goal, path efficiency and speed, from the env's
   per-episode log (extras["log"]). The initial episode-length spread used for training is undone, so every
@@ -89,6 +90,7 @@ from isaaclab_tasks.utils.hydra import hydra_task_config
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "source" / "drone_nav"))
 import drone_nav.tasks  # noqa: E402, F401
+from drone_nav.policies import depth_student  # noqa: E402
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -206,9 +208,20 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     # The training env spreads initial episode lengths at random; give every evaluated episode the full limit.
     env.unwrapped.episode_length_buf[:] = 0
 
-    runner = OnPolicyRunner(env, agent_cfg.to_dict(), log_dir=None, device=agent_cfg.device)
-    runner.load(str(ckpt))
-    policy = runner.get_inference_policy(device=env.unwrapped.device)  # deterministic: the action mean
+    ckpt_data = torch.load(str(ckpt), map_location=env.unwrapped.device, weights_only=False)
+    if depth_student.is_student_checkpoint(ckpt_data):
+        # A Phase 3 student from scripts/distill.py: it reads the "policy" observation (goal inputs + depth image).
+        student = depth_student.load_student(ckpt_data, env.unwrapped.device)
+
+        def policy(obs):
+            return student(obs["policy"])
+
+        reset_policy = student.reset
+    else:
+        runner = OnPolicyRunner(env, agent_cfg.to_dict(), log_dir=None, device=agent_cfg.device)
+        runner.load(str(ckpt))
+        policy = runner.get_inference_policy(device=env.unwrapped.device)  # deterministic: the action mean
+        reset_policy = runner.alg.policy.reset
     print(f"[INFO] Evaluating {ckpt} on {args_cli.task} with {args_cli.num_envs} envs, seed {agent_cfg.seed}")
 
     logs: dict[str, list[torch.Tensor]] = {}
@@ -220,7 +233,7 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     while simulation_app.is_running() and (episodes < args_cli.episodes or steps < video_steps):
         with torch.inference_mode():
             obs, _, dones, extras = env.step(policy(obs))
-            runner.alg.policy.reset(dones)
+            reset_policy(dones)
         steps += 1
         log = extras.get("log")
         if log and episodes < args_cli.episodes:

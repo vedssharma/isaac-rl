@@ -50,6 +50,8 @@ REQUIRED_ENV = ("WANDB_API_KEY", "WANDB_ENTITY", "WANDB_PROJECT", "HF_TOKEN", "H
 OPTIONAL_ENV = ("WANDB_BASE_URL",)  # a self-hosted / dedicated W&B server; unset means wandb.ai
 REMOTE_ROOT = "$HOME/launch"  # on the instance: launch/isaac-rl (the clone) and launch/runs/<run>/
 POLL_S = 20
+# Scripts that produce a checkpoint: verified on W&B/HF, and can be followed by --eval runs of play.py.
+TRAINING_SCRIPTS = ("train", "distill")
 # --quiet prints only lines containing one of these; the full log is always saved locally.
 QUIET_MARKERS = (
     "[run_remote]", "Learning iteration", "Mean reward", "Mean episode length", "Iteration time",
@@ -85,10 +87,11 @@ def parse_args(argv: list[str]) -> tuple[argparse.Namespace, list[str]]:
     p.add_argument("--max-train-min", type=float, default=120, help="limit for the script (default 120)")
     p.add_argument(
         "--script",
-        choices=("train", "play", "check_depth"),
+        choices=("train", "distill", "play", "check_depth"),
         default="train",
-        help="train: scripts/train.py, verified on W&B/HF. play: scripts/play.py (evaluation), which must exit 0. "
-        "check_depth: scripts/check_depth.py, which must exit 0",
+        help="train: scripts/train.py, verified on W&B/HF. distill: scripts/distill.py (Phase 3 DAgger), verified "
+        "the same way. play: scripts/play.py (evaluation), which must exit 0. check_depth: scripts/check_depth.py, "
+        "which must exit 0",
     )
     p.add_argument(
         "--eval",
@@ -387,7 +390,7 @@ class Launch:
         remote_cmd = f"""set -euo pipefail
 {exports}
 command -v git >/dev/null || {{ sudo apt-get -o DPkg::Lock::Timeout=900 update -qq && sudo apt-get -o DPkg::Lock::Timeout=900 install -y -qq git; }}
-if pgrep -f '[s]cripts/(train|play|check_depth).py' >/dev/null; then echo 'another job is already running here' >&2; exit 4; fi
+if pgrep -f '[s]cripts/(train|distill|play|check_depth).py' >/dev/null; then echo 'another job is already running here' >&2; exit 4; fi
 mkdir -p {run_dir}
 [ -d {clone}/.git ] || git clone --quiet {q(self.clone_url)} {clone}
 git -C {clone} fetch --quiet origin
@@ -623,7 +626,7 @@ echo "started pid $!"
         self.record["price_per_hour"] = price
         self.record["cost_usd"] = round(hours * price, 2) if price is not None else None
         log(f"box time {hours * 60:.0f} min" + (f", about ${hours * price:.2f}" if price else ""))
-        if not self.started or self.args.script != "train":
+        if not self.started or self.args.script not in TRAINING_SCRIPTS:
             return  # no W&B run of our own to annotate (train.py never ran, or this was play.py)
         try:
             import wandb
@@ -652,7 +655,7 @@ echo "started pid $!"
             self.exit_code = self.follow()
             if self.exit_code is None:
                 self.interrupt_remote()
-            elif self.exit_code == 0 and self.args.script == "train" and self.args.eval:
+            elif self.exit_code == 0 and self.args.script in TRAINING_SCRIPTS and self.args.eval:
                 # Verify first: evaluations need the final checkpoint on W&B.
                 verified = bool(self.safely("verify", self.verify))
                 checked = True
@@ -669,11 +672,11 @@ echo "started pid $!"
             self.record["exit_code"] = self.exit_code
             if self.exit_code == 0 and not checked:
                 # play.py and check_depth.py write their own results (W&B, HF); exiting 0 is their success.
-                verified = self.args.script != "train" or bool(self.safely("verify", self.verify))
+                verified = self.args.script not in TRAINING_SCRIPTS or bool(self.safely("verify", self.verify))
             if (
                 not verified
                 and self.started
-                and self.args.script == "train"
+                and self.args.script in TRAINING_SCRIPTS
                 and self.safely("instance lookup", get_instance, self.name)
             ):
                 pulled = bool(self.safely("copy back", self.pull_run_dir))
@@ -701,9 +704,9 @@ def main(argv: list[str]) -> int:
         raise SystemExit(str(e))
     for spec in args.eval:
         parse_eval_spec(spec)  # validate early
-    if args.eval and args.script != "train":
-        raise SystemExit("--eval runs after training; it needs --script train")
-    if args.script == "train":
+    if args.eval and args.script not in TRAINING_SCRIPTS:
+        raise SystemExit("--eval runs after training; it needs --script train or distill")
+    if args.script in TRAINING_SCRIPTS:
         train_args = build_train_args(train_args, args.run_name)
     elif args.script == "play":
         train_args = build_play_args(train_args)

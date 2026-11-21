@@ -183,3 +183,22 @@ def closest_by_kind(dist: torch.Tensor, kinds: torch.Tensor, num_kinds: int) -> 
     distances and the footprints' kind indices (n, m) (-1 for padding). inf where an env's tile has none."""
     match = kinds[..., None] == torch.arange(num_kinds, device=kinds.device)  # (n, m, k)
     return torch.where(match, dist[..., None], torch.full_like(match, float("inf"), dtype=dist.dtype)).amin(dim=1)
+
+
+def heading_travel_angle(yaw: torch.Tensor, vel_xy: torch.Tensor) -> torch.Tensor:
+    """(n,) angle in [0, pi] between the drone's heading (body +x, horizontal) and its horizontal direction of
+    travel. 0: flying where it faces (a forward camera sees where it's going); pi: flying backwards."""
+    travel = torch.atan2(vel_xy[:, 1], vel_xy[:, 0])
+    diff = travel - yaw
+    return torch.atan2(torch.sin(diff), torch.cos(diff)).abs()
+
+
+def heading_penalty(
+    angle: torch.Tensor, speed: torch.Tensor, full_speed: float, weight: float, step_dt: float
+) -> torch.Tensor:
+    """(n,) per-step reward for not facing the direction of travel: -weight * (1 - cos(angle)) per second, scaled by
+    min(speed / full_speed, 1) so that hovering and slow manoeuvres cost little whatever the heading. angle is
+    heading_travel_angle. 0 when flying straight ahead, -2 * weight per second at full speed when flying backwards."""
+    gate = (speed / full_speed).clamp(0.0, 1.0)
+    return -weight * (1.0 - torch.cos(angle)) * gate * step_dt
+
