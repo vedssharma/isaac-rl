@@ -48,6 +48,9 @@ class ObstacleRewardWeightsCfg(RewardWeightsCfg):
     # Per second, x (1 - cos(angle between heading and travel)) x min(speed / heading_full_speed, 1): face where you
     # fly, so a forward camera sees it (Phase 3, docs/phase3-depth-student.md §4-5). 0.0 (the default) turns it off.
     heading: float = 0.0
+    # Per second, x metres above altitude_soft_ceiling: stay off the 4 m hard ceiling. Policies that face forward
+    # climbed at walls whose door was out of view (docs/phase3-depth-student.md §8). 0.0 (the default) turns it off.
+    altitude: float = 0.0
 
 
 @configclass
@@ -120,6 +123,7 @@ class DroneNavObstaclesEnvCfg(DroneNavGoalCTBREnvCfg):
     # "in view" within this angle (rad) of the heading: 45 degrees, half the Phase 3 camera's horizontal FOV.
     moving_speed: float = 0.5
     heading_full_speed: float = 1.0  # m/s: the heading reward term reaches its full weight at this speed
+    altitude_soft_ceiling: float = 3.0  # m: the altitude reward term starts here (goals are at most 2.5 m up)
     camera_half_fov: float = 0.7853981633974483
 
     # Spawn and goal points stay this far inside the start and goal strips (from their edges and the side walls).
@@ -202,6 +206,7 @@ class DroneNavObstaclesEnv(DroneNavGoalEnv):
         self._min_dist_episode = torch.full((n,), self._max_range, device=dev)
         self._episode_sums["proximity"] = torch.zeros(n, device=dev)
         self._episode_sums["heading"] = torch.zeros(n, device=dev)
+        self._episode_sums["altitude"] = torch.zeros(n, device=dev)
         self._heading_angle = torch.zeros(n, device=dev)  # this step's heading-vs-travel angle (_get_dones)
 
         if self.cfg.eval_terrain_level >= 0:
@@ -538,7 +543,11 @@ class DroneNavObstaclesEnv(DroneNavGoalEnv):
             self.step_dt,
         )
         self._episode_sums["heading"] += heading
-        return reward + proximity + heading
+        altitude = obs_mdp.altitude_penalty(
+            self._robot.data.root_pos_w[:, 2], self.cfg.altitude_soft_ceiling, self._weights["altitude"], self.step_dt
+        )
+        self._episode_sums["altitude"] += altitude
+        return reward + proximity + heading + altitude
 
     def _speed_limit(self) -> float | torch.Tensor:
         # _get_dones (which reads the lidar into _min_dist) runs before _get_rewards in DirectRLEnv.step.

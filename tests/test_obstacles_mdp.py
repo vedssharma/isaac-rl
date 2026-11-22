@@ -217,3 +217,9 @@ def test_heading_penalty():
     # Facing travel: free. Sideways: -w per second. Backwards: -2w per second at full speed, half that at half speed.
     torch.testing.assert_close(r, torch.tensor([0.0, -0.04, -0.08, -0.04, 0.0]), atol=1e-7, rtol=0)
     assert (mdp.heading_penalty(angle, speed, 1.0, 0.0, 0.02) == 0).all()  # weight 0: off
+
+
+def test_altitude_penalty():
+    z = torch.tensor([1.0, 3.0, 3.5, 4.0])
+    r = mdp.altitude_penalty(z, soft_ceiling=3.0, weight=2.0, step_dt=0.02)
+    torch.testing.assert_close(r, torch.tensor([0.0, 0.0, -0.02, -0.04]), atol=1e-7, rtol=0)

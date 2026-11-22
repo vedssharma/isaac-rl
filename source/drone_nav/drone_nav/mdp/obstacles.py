@@ -202,3 +202,9 @@ def heading_penalty(
     gate = (speed / full_speed).clamp(0.0, 1.0)
     return -weight * (1.0 - torch.cos(angle)) * gate * step_dt
 
+
+def altitude_penalty(altitude: torch.Tensor, soft_ceiling: float, weight: float, step_dt: float) -> torch.Tensor:
+    """(n,) per-step reward for flying above a soft ceiling: -weight * (altitude - soft_ceiling) per second above it,
+    0 below. Keeps the policy off the hard ceiling (a too_high crash) without touching normal flight."""
+    return -weight * (altitude - soft_ceiling).clamp(min=0.0) * step_dt
+
