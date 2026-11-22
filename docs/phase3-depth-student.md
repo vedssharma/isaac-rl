@@ -14,6 +14,7 @@ Status:
 - [x] A teacher that faces where it flies (§5): its direction of travel is in view 98.6% of the time, 89.2% / 7.05%
 - [x] Distilled from it (§6): 94.4% success, 2.7% collisions on held-out level 5 from depth alone (seed 42)
 - [x] **Three seeds (§6.1): 93.4% ± 2.6 success, 4.9% ± 3.9 collisions; every seed ≥ 90.5%. G3 is met.**
+- [x] Its failures (§8): climbing happens at walls whose door is out of view; poles are seen but are 1–2 pixels wide
 - [ ] Option B: PPO from depth with an asymmetric critic
 - [ ] GRU memory
 - **Exit (G3):** ≥ 85% success at difficulty 5 from depth only.
@@ -360,4 +361,79 @@ evaluation, then re-run it with the viewer on that env.
 `ViewerCfg(eye=(-1, -1, 0.45))`), so in dense layouts it sometimes ends up inside an obstacle (at 4 s the frame is
 all wall). A camera behind the drone along its heading and higher up, plus PLAN.md's picture-in-picture of the depth
 image, would make better write-up material.
+
+## 8. What the student's failures look like
+
+The video (§7) can't show 1–3% events, so evaluations can now record the failures themselves (commit `11217d1`):
+
+- **Recording:** `env.record_failures=K` keeps every drone's current episode in a per-env buffer: tile-frame path,
+  attitude, velocity, actions, closest lidar reading, and in `Drone-Nav-Depth-v0` the clean depth image as uint8.
+  It saves up to K episodes that end in a crash, with the tile's footprints and the goal.
+- **Saving:** `play.py` writes them to `failures/<eval name>/*.npz` and uploads them with the results.
+- **Plotting:** `scripts/plot_failures.py` (local, matplotlib) draws each one: the tile from above with the path and
+  the heading, the altitude, speed and closest-reading traces, and the depth images of the last 2 s. A CPU test
+  saves a synthetic episode the way play.py does and plots it.
+
+`p3-student-failures-s42`: the seed-42 student
+([jziy8wep](https://forge.coreweave.com/wandb/vedssharma1/isaac-rl/runs/jziy8wep)) on the 60 held-out level-5
+layouts, 2000 episodes, with attribution, `env.record_failures=150`. It took $0.17 and reproduced §6 exactly
+(94.4% / 2.7% / 2.85%), so the recording doesn't change the behaviour. It caught all 111 crashed episodes: 57 too
+high, 54 collisions (45 poles, 6 cylinders, and one each of wall, side wall and box).
+
+### 8.1 Climbing: at walls whose door is out of view
+
+| | Tile has a wall | Within 1.5 m of a wall in the last 3 s |
+|---|---:|---:|
+| **Climbing failures (57)** | **96%** | **96%** |
+| Collisions (54) | 70% | 50% |
+| Level-5 layouts from the generator | about 60% | |
+
+![A climbing failure](images/p3-failure-climb-at-wall.png)
+
+The typical case:
+- The drone flies at a wall where there's no door; the door is metres away along the wall, outside a 90° view.
+- It stops nose-to-wall (speed near 0; the depth image is one dark surface), then slides along the wall toward the
+  door, and climbs at 0.5–1 m/s while it does, until it crosses the 4 m ceiling.
+
+Walls are 5 m tall, so climbing never gets it past one. The climbs happen early in the corridor (median 30% of the
+way along), where most walls are.
+
+That also explains §5–6.1's finding that climbing came in with the heading term, seed by seed. The old teacher saw
+360° (lidar ring and nearest obstacles), so it always knew where the door was. A teacher that faces forward, and its
+student, often don't. The student inherits its teacher's climbing rate: 2.3% → 2.85%, 0 → 0, 1.6% → 1.3%.
+
+### 8.2 Poles: in view, but one or two pixels wide
+
+For each of the 45 pole hits, the camera replay (§2) from the recorded poses shows when the struck pole was in the
+image:
+
+| | |
+|---|---:|
+| In view at least 0.5 s before impact | 100% |
+| In view at least 1 s before impact | 98% (median: the whole last 2 s) |
+| Width in the image 1 s before impact (median) | 1 pixel |
+| Width 0.5 s before impact (p10–p90) | 1–3 pixels |
+
+![A pole collision](images/p3-failure-pole.png)
+
+This is not the lidar's blind spot from Phase 2 (§11 there): the student sees the pole the whole time. But at
+64 × 48 over 90°, one pixel is 1.4°, and a 3–6 cm pole at 3 m covers 1–2 pixels. A 1-pixel pole is all edge, so the
+noise model's edge dropout (30%) removes it from about a third of frames. It flickers, as the lidar's poles did. In
+the example the drone flies straight at a pole that is centred in the image from −0.9 s.
+
+### 8.3 What would help
+
+- **Climbing:**
+  - *A soft altitude limit in the teacher's reward* (a penalty above about 3 m). This stops the teacher showing it,
+    and therefore the student. The drone would still be stuck at a doorless stretch of wall, but by turning to look
+    rather than climbing.
+  - *Memory (PLAN.md's GRU).* The door is usually visible on the approach, before the drone is at the wall, so
+    remembering it could replace climbing with sliding the right way.
+  - *A wider field of view.*
+- **Poles:**
+  - *More pixels:* 128 × 96 makes a pole at 3 m 2–4 pixels wide, at 4× the rays. The camera was 18 ms per step for
+    1024 envs (§1), and distillation was 2.1 s per iteration, mostly simulation.
+  - *Edge dropout that spares thin objects,* though that's a question of what a real sensor does.
+
+Both are now under 3% each, and G3 is met with margin. So these are improvements for Phase 4/5, not blockers.
 
