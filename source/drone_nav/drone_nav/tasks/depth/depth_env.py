@@ -88,6 +88,15 @@ class DroneNavDepthEnv(DroneNavObstaclesEnv):
         pattern = self.cfg.depth_camera.pattern_cfg
         return pattern.height, pattern.width
 
+    def _record_image_shape(self) -> tuple[int, int] | None:
+        self._record_image_range = self.cfg.depth_camera.max_distance
+        return self.depth_image_shape
+
+    def _record_image(self) -> torch.Tensor:
+        """The clean depth image (noise is random, so it would only blur the record), 0-255 over the camera range."""
+        scaled = self.clean_depth() / self.cfg.depth_camera.max_distance * 255.0
+        return scaled.round().clamp(0, 255).to(torch.uint8)
+
     def clean_depth(self) -> torch.Tensor:
         """(n, H, W) noise-free distance to the image plane in metres, capped at the camera's range."""
         return self._camera.data.output["distance_to_image_plane"][..., 0]

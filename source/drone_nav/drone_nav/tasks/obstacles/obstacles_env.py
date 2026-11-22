@@ -18,6 +18,8 @@ obstacle_field.TEST_SEEDS (Hydra: env.terrain.terrain_generator.seed=1001).
 
 from __future__ import annotations
 
+import dataclasses
+
 import isaaclab.sim as sim_utils
 import numpy as np
 import torch
@@ -148,6 +150,11 @@ class DroneNavObstaclesEnvCfg(DroneNavGoalCTBREnvCfg):
     # (of.near_miss_summary), and for every episode the closest it came to each kind of obstacle, over the episodes
     # that came within pass_distance of one (NearMiss/<kind>_closest).
     pass_distance: float = 1.0
+    # Evaluation diagnostic: keep up to this many whole episodes that end in a crash (collision, too high, ...) in
+    # env.failure_records: the drone's tile-frame path, attitude, velocity and actions every step, the tile's
+    # obstacle footprints, the goal, and (Drone-Nav-Depth-v0) the clean depth image it saw. play.py saves them under
+    # failures/<eval name>/ and scripts/plot_failures.py draws them. 0 (the default) records nothing.
+    record_failures: int = 0
 
     rewards: ObstacleRewardWeightsCfg = ObstacleRewardWeightsCfg()
 
@@ -235,10 +242,84 @@ class DroneNavObstaclesEnv(DroneNavGoalEnv):
         self._origin_in_tile_t = torch.tensor(self._origin_in_tile, dtype=torch.float, device=dev)
         if self.cfg.attribute_collisions:
             self._setup_attribution()
+        self.failure_records: list[dict] = []
+        if self.cfg.record_failures > 0:
+            self._setup_failure_recorder()
         if self.cfg.nearest_obstacles_obs > 0:
             rows, cols = self._terrain.terrain_origins.shape[:2]
             packed = of.pack_tiles(self._layouts(), rows, cols, min_slots=self.cfg.nearest_obstacles_obs)
             self._footprints = {k: torch.as_tensor(v, device=dev) for k, v in packed.items()}
+
+    # -- failure recorder (cfg.record_failures)
+
+    def _record_image_shape(self) -> tuple[int, int] | None:
+        """(H, W) of an image to record every step with failure episodes, or None. The depth task records its camera."""
+        return None
+
+    def _record_image(self) -> torch.Tensor:
+        """(n, H, W) uint8 image for the failure recorder (see _record_image_shape)."""
+        raise NotImplementedError
+
+    def _setup_failure_recorder(self) -> None:
+        n, dev, steps = self.num_envs, self.device, int(self.max_episode_length)
+        self._rec_steps = steps
+        self._rec = {
+            "pos": torch.zeros(n, steps, 3, device=dev),
+            "quat": torch.zeros(n, steps, 4, device=dev),
+            "vel": torch.zeros(n, steps, 3, device=dev),
+            "action": torch.zeros(n, steps, 4, device=dev),
+            "min_dist": torch.zeros(n, steps, device=dev),  # closest horizontal lidar reading
+        }
+        shape = self._record_image_shape()
+        if shape is not None:
+            self._rec["image"] = torch.zeros(n, steps, *shape, dtype=torch.uint8, device=dev)
+
+    def _record_step(self) -> None:
+        """Write this step of every env's episode (episode_length_buf has already counted it)."""
+        idx = (self.episode_length_buf - 1).clamp(0, self._rec_steps - 1)
+        envs = self._robot._ALL_INDICES
+        data = self._robot.data
+        self._rec["pos"][envs, idx] = data.root_pos_w
+        self._rec["quat"][envs, idx] = data.root_quat_w
+        self._rec["vel"][envs, idx] = data.root_lin_vel_w
+        self._rec["action"][envs, idx] = self._actions
+        self._rec["min_dist"][envs, idx] = self._min_dist
+        if "image" in self._rec:
+            self._rec["image"][envs, idx] = self._record_image()
+
+    def _save_failures(self, ended: torch.Tensor) -> None:
+        """Copy the episodes of envs `ended` that crashed into failure_records (before they reset)."""
+        crash_keys = [k for k in self._terms if k != "goal"]
+        crashed = torch.stack([self._terms[k][ended] for k in crash_keys]).any(dim=0)
+        for e in ended[crashed].tolist():
+            if len(self.failure_records) >= self.cfg.record_failures:
+                return
+            steps = int(self.episode_length_buf[e].clamp(max=self._rec_steps))
+            r, c = int(self._episode_level[e]), int(self._terrain.terrain_types[e])
+            shift = np.asarray(self._origin_in_tile[:2], dtype=np.float32) - (
+                self._terrain.terrain_origins[r, c, :2].cpu().numpy()
+            )
+            rec = {k: v[e, :steps].cpu().numpy() for k, v in self._rec.items()}
+            rec["pos"][:, :2] += shift
+            goal = self._goal_pos_w[e].cpu().numpy().copy()
+            goal[:2] += shift
+            rec["goal"] = goal
+            hit = int(self._hit_kind[e]) if self._tile_layouts is not None else -1
+            rec["meta"] = {
+                "termination": next(k for k in crash_keys if bool(self._terms[k][e])),
+                "hit_kind": of.ATTRIBUTION_KINDS[hit] if hit >= 0 else None,
+                "tile": [r, c],
+                "env": e,
+                "steps": steps,
+                "step_dt": self.step_dt,
+                "min_altitude": self.cfg.min_altitude,
+                "max_altitude": self.cfg.max_altitude,
+                "collision_radius": self.cfg.collision_radius,
+                "image_max_range": getattr(self, "_record_image_range", None),
+                "tile_size": list(self._tile_params.size),
+                "footprints": [dataclasses.asdict(o) for o in of.layout_footprints(self._layouts()[(r, c)])],
+            }
+            self.failure_records.append(rec)
 
     def _policy_obs_dim(self, cfg: DroneNavObstaclesEnvCfg) -> int:
         """Size of the "policy" observation. Called before the env is built; here, the privileged observation."""
@@ -432,6 +513,8 @@ class DroneNavObstaclesEnv(DroneNavGoalEnv):
             self._record_trace()
             if hit.any():
                 self._attribute(hit.nonzero(as_tuple=False).squeeze(-1))
+        if self.cfg.record_failures > 0 and len(self.failure_records) < self.cfg.record_failures:
+            self._record_step()
         # A collision is a crash: it ends the episode, takes the crash penalty and overrides reaching the goal.
         self._terms["collision"] = hit
         self._terms["goal"] = self._terms["goal"] & ~hit
@@ -473,6 +556,8 @@ class DroneNavObstaclesEnv(DroneNavGoalEnv):
         if env_ids is None or len(env_ids) == self.num_envs:
             env_ids = self._robot._ALL_INDICES
         ended = env_ids[self.episode_length_buf[env_ids] > 0]  # not the first reset of a fresh env
+        if self.cfg.record_failures > 0 and len(ended) > 0:
+            self._save_failures(ended)
         if self._curriculum is not None and len(ended) > 0:
             # Move envs between levels before super() respawns them, so they start on their new tile.
             t = self._terrain
