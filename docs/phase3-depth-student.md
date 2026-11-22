@@ -328,8 +328,10 @@ All in % of episodes. SD is across seeds.
   for about 75 minutes. I deleted the box by hand, the launcher gave up, and the evaluation was re-run on a fresh
   box ($0.68). The hung box ran 2.3 h, about $5.05.
 - **The seed-2 student's Nebius delete took 33 minutes** ($3.39 for that run).
-- The launcher's ssh calls need a timeout and a cap on how long it waits for an unreachable box. That's not fixed
-  yet.
+- Fixed afterwards: each ssh poll already timed out at 120 s, but the launcher only gave up once Brev stopped
+  listing the box RUNNING. `launch.py --max-unreachable-min` (default 20) now gives up on a box that hasn't answered
+  ssh for that long, whatever Brev says, and the normal teardown deletes it. A test replays this hang with a fake
+  clock: the launcher stops after about 20 minutes, not at its 170-minute deadline.
 
 Cost of the two seeds: teachers $0.68 + $0.93, students $5.05 + $3.39, evaluation re-run $0.68, about $10.70 in all.
 

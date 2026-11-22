@@ -86,6 +86,12 @@ def parse_args(argv: list[str]) -> tuple[argparse.Namespace, list[str]]:
     p.add_argument("--max-setup-min", type=float, default=40, help="limit for the install (default 40)")
     p.add_argument("--max-train-min", type=float, default=120, help="limit for the script (default 120)")
     p.add_argument(
+        "--max-unreachable-min",
+        type=float,
+        default=20,
+        help="give up on a box that hasn't answered ssh for this long, even if Brev still lists it RUNNING (20)",
+    )
+    p.add_argument(
         "--script",
         choices=("train", "distill", "play", "check_depth"),
         default="train",
@@ -149,6 +155,30 @@ def restore_summary_keys(run, keys: tuple[str, ...]) -> list[str]:
         log(f"verify: couldn't write {list(restored)} back to the W&B summary: {e}")
     log(f"verify: restored {', '.join(restored)} to the W&B summary from wandb-summary.json")
     return list(restored)
+
+
+class Unreachable:
+    """How long a box has gone without answering ssh, and whether that's past the limit.
+
+    Brev can list a box RUNNING after it has stopped answering ssh at all ("connection timed out during banner
+    exchange"): the seed-1 student's box on 2026-11-20 hung during its evaluation and was polled for about 75 minutes
+    (docs/phase3-depth-student.md §6.1). Without a cap, follow() waits for the whole time limit."""
+
+    def __init__(self, limit_s: float):
+        self.limit_s = limit_s
+        self.since: float | None = None
+
+    def report(self, ok: bool, now: float) -> None:
+        if ok:
+            self.since = None
+        elif self.since is None:
+            self.since = now
+
+    def seconds(self, now: float) -> float:
+        return 0.0 if self.since is None else now - self.since
+
+    def exceeded(self, now: float) -> bool:
+        return self.since is not None and now - self.since > self.limit_s
 
 
 def eval_play_overrides(train_args: list[str], eval_overrides: list[str]) -> list[str]:
@@ -419,6 +449,7 @@ echo "started pid $!"
         local_log = self.local_dir / log_name
         offset = 0
         failures = 0
+        unreachable = Unreachable(self.args.max_unreachable_min * 60)
         # Setup and training have separate limits; the remote `timeout` enforces the training one, this is a backstop.
         deadline = time.time() + (self.args.max_setup_min + self.args.max_train_min + 10) * 60
         cmd = (
@@ -435,6 +466,7 @@ echo "started pid $!"
                     ok = r.returncode == 0
                 except subprocess.TimeoutExpired:
                     ok = False
+                unreachable.report(ok, time.time())
                 if not ok:
                     failures += 1
                     if failures % 5 == 0:
@@ -442,6 +474,12 @@ echo "started pid $!"
                         log(f"ssh failed {failures} times in a row; instance status {status}")
                         if status != "RUNNING":
                             raise BrevError(f"{self.name} is {status}; giving up on this run")
+                    if unreachable.exceeded(time.time()):
+                        minutes = unreachable.seconds(time.time()) / 60
+                        raise BrevError(
+                            f"{self.name} hasn't answered ssh for {minutes:.0f} min (Brev may still list it RUNNING); "
+                            "giving up on this run"
+                        )
                 else:
                     failures = 0
                     head, _, chunk = r.stdout.partition(b"\n")
