@@ -396,7 +396,7 @@ The typical case:
   door, and climbs at 0.5–1 m/s while it does, until it crosses the 4 m ceiling.
 
 Walls are 5 m tall, so climbing never gets it past one. The climbs happen early in the corridor (median 30% of the
-way along), where most walls are.
+way along).
 
 That also explains §5–6.1's finding that climbing came in with the heading term, seed by seed. The old teacher saw
 360° (lidar ring and nearest obstacles), so it always knew where the door was. A teacher that faces forward, and its
@@ -431,8 +431,8 @@ the example the drone flies straight at a pole that is centred in the image from
     remembering it could replace climbing with sliding the right way.
   - *A wider field of view.*
 - **Poles:**
-  - *More pixels:* 128 × 96 makes a pole at 3 m 2–4 pixels wide, at 4× the rays. The camera was 18 ms per step for
-    1024 envs (§1), and distillation was 2.1 s per iteration, mostly simulation.
+  - *More pixels:* 128 × 96 makes a pole at 3 m 2–4 pixels wide, at 4× the rays. The whole env step was 18 ms at 1024 envs
+    (§1), and distillation was 2.1 s per iteration; the camera's share of that hasn't been measured.
   - *Edge dropout that spares thin objects,* though that's a question of what a real sensor does.
 
 Both are now under 3% each, and G3 is met with margin. So these are improvements for Phase 4/5, not blockers.
