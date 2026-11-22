@@ -339,3 +339,25 @@ Cost of the two seeds: teachers $0.68 + $0.93, students $5.05 + $3.39, evaluatio
 depth with an asymmetric critic, as a comparison) and a GRU. Neither is needed for G3; both are write-up material.
 The climbing (1.4%) and the residual poles are the obvious things to look at in videos before Phase 4 (robustness).
 
+## 7. Watching the student
+
+PLAN.md asks for a video every phase; this is the first since Phase 1. `p3-student-video-s42` (`launch.py --script
+play ... --video --video_length 1500`, $0.27) evaluated the seed-42 student
+([jziy8wep](https://forge.coreweave.com/wandb/vedssharma1/isaac-rl/runs/jziy8wep)) on the held-out level-5 layouts
+with 64 envs and recorded env 0's chase cam for 30 s. It ran on Crusoe: `--types` excludes AWS, whose boxes can't
+render. Over the 201 episodes it scored 95.0% / 2.5% collisions / 2.5% too high, in line with §6. The video is on
+Hugging Face next to the checkpoint (`play/videos/video_heldout60_l5/`).
+
+**What it shows** (one frame per second): the drone flies level and steadily through cylinders, boxes and poles,
+weaving between them rather than stopping, and reaches its goal (the red sphere) twice in the 30 s. No crash, no
+climbing, and nothing that looks like reward hacking: no hovering, no hugging the side walls, no flying over things.
+
+**What it can't show:** the failures. Climbing (about 1.4%) and pole hits (about 3%) are rare enough that one drone's
+30 s won't contain them. Seeing them needs a targeted capture: log which env fails, and when, in a deterministic
+evaluation, then re-run it with the viewer on that env.
+
+**For Phase 5's videos:** the chase camera sits at a fixed world offset (1 m back and left, 0.45 m up;
+`ViewerCfg(eye=(-1, -1, 0.45))`), so in dense layouts it sometimes ends up inside an obstacle (at 4 s the frame is
+all wall). A camera behind the drone along its heading and higher up, plus PLAN.md's picture-in-picture of the depth
+image, would make better write-up material.
+
