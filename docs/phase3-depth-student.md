@@ -501,14 +501,14 @@ held-out level-5 layouts, 2000 episodes each, 0.1 m rule. Against §6.1's headin
 | **Collisions** | 6.7 ± 0.9 | 6.1 ± 0.6 | 4.9 ± 3.9 | 6.1 ± 1.2 |
 | … poles | 3.5 | 4.1 | 3.5 | 4.6 |
 | **Too high** | 1.3 | **0.03** | 1.4 | **0** |
-| Time-out | 0.45 | 0.4 | 0.27 | 1.2 |
+| Time-out | 0.47 | 0.4 | 0.27 | 1.2 |
 | Per seed: success s42 / s1 / s2 | 89.2 / 92.6 / 91.75 | 92.7 / 94.2 / 93.0 | 94.4 / 90.5 / 95.3 | 91.5 / 95.1 / 91.0 |
 | Per seed: collisions s42 / s1 / s2 | 7.05 / 7.35 / 5.65 | 6.75 / 5.5 / 6.04 | 2.7 / 9.4 / 2.65 | 6.35 / 4.85 / 7.2 |
 
 All in % of episodes. Every soft-ceiling run faces forward 96.7–97.9% of the time.
 
-1. **The soft ceiling makes better teachers:** +2.1 points of success, every seed above every heading-only seed but
-   one (92.6), and a third of the spread. Climbing is gone (0.03%), and collisions dip slightly.
+1. **The soft ceiling makes better teachers:** +2.1 points of success, every seed above every heading-only seed
+   (narrowly: 92.7 against 92.6), and less than half the spread. Climbing is gone (0.03%), and collisions dip slightly.
 2. **It doesn't make better students.** The mean success is 0.9 points lower and collisions 1.2 points higher, both
    well inside the seed spread. Climbing is gone here too, but it turns into the two things §8.3 expected:
    - more time-outs (1.2% against 0.27%): drones stuck at a doorless wall until the 20 s limit;
