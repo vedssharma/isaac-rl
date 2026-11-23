@@ -104,7 +104,8 @@ def parse_args(argv: list[str]) -> tuple[argparse.Namespace, list[str]]:
         action="append",
         default=[],
         metavar="NAME[:OVERRIDE,...]",
-        help="train only: after training verifies, run scripts/play.py on the same box (repeatable), e.g. "
+        help="after training verifies (or after a --script play run), run scripts/play.py again on the same box and "
+        "checkpoint (repeatable), e.g. "
         "--eval eval --eval eval_mass1.2:env.mass_scale=1.2. Results go to the run's W&B summary as NAME/*",
     )
     p.add_argument("--eval-episodes", type=int, default=1000, help="episodes per --eval (default 1000)")
@@ -524,13 +525,16 @@ echo "started pid $!"
     # -- 4b. evaluations on the same box
 
     def run_evals(self) -> None:
-        """play.py for each --eval on this box (Isaac Lab is already installed), recording each exit code."""
+        """play.py for each --eval on this box (Isaac Lab is already installed), recording each exit code. After
+        training, on the run's checkpoint; after a play.py run, on the checkpoint it evaluated (its --wandb_run)."""
         task = flag_value(self.train_args, "--task")
+        trained_here = self.args.script in TRAINING_SCRIPTS
+        run_ref = self.wandb_run_id if trained_here else flag_value(self.train_args, "--wandb_run")
         results = self.record.setdefault("evals", {})
         for spec in self.args.eval:
             name, overrides = parse_eval_spec(spec)
             play_args = [
-                "--task", task, "--wandb_run", self.wandb_run_id, "--episodes", str(self.args.eval_episodes),
+                "--task", task, "--wandb_run", run_ref, "--episodes", str(self.args.eval_episodes),
                 "--eval_name", name, "--headless", *eval_play_overrides(self.train_args, overrides),
             ]  # fmt: skip
             log(f"evaluation {name}: play.py {' '.join(play_args)}")
@@ -693,6 +697,8 @@ echo "started pid $!"
             self.exit_code = self.follow()
             if self.exit_code is None:
                 self.interrupt_remote()
+            elif self.exit_code == 0 and self.args.script == "play" and self.args.eval:
+                self.run_evals()  # more conditions on the same box and checkpoint
             elif self.exit_code == 0 and self.args.script in TRAINING_SCRIPTS and self.args.eval:
                 # Verify first: evaluations need the final checkpoint on W&B.
                 verified = bool(self.safely("verify", self.verify))
@@ -742,8 +748,8 @@ def main(argv: list[str]) -> int:
         raise SystemExit(str(e))
     for spec in args.eval:
         parse_eval_spec(spec)  # validate early
-    if args.eval and args.script not in TRAINING_SCRIPTS:
-        raise SystemExit("--eval runs after training; it needs --script train or distill")
+    if args.eval and args.script not in (*TRAINING_SCRIPTS, "play"):
+        raise SystemExit("--eval runs after train, distill or play; not after --script check_depth")
     if args.script in TRAINING_SCRIPTS:
         train_args = build_train_args(train_args, args.run_name)
     elif args.script == "play":

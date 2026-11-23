@@ -333,3 +333,27 @@ def test_follow_gives_up_on_a_box_that_stays_running_but_never_answers(monkeypat
     with pytest.raises(launch.BrevError, match="hasn't answered ssh"):
         run.follow()
     assert 20 * 60 < clock["t"] < 25 * 60  # not the 170-minute deadline
+
+
+def test_evals_after_a_play_run_use_its_checkpoint_and_overrides(tmp_path):
+    from types import SimpleNamespace
+
+    run = object.__new__(launch.Launch)
+    run.args = SimpleNamespace(script="play", eval=["eval_mass:env.randomization.mass_spread=0.2"], eval_episodes=500)
+    run.train_args = ["--task", "Drone-Nav-Depth-v0", "--wandb_run", "abc123", "--eval_name", "nominal",
+                      "env.eval_terrain_level=5", "--headless"]  # fmt: skip
+    run.wandb_run_id, run.remote_run_dir, run.local_dir, run.record = "launcher-id", "/r", tmp_path, {}
+    started = []
+    run.start_remote = lambda script, args, run_dir: started.append((script, args))
+    run.follow = lambda run_dir, log_name: 0
+    run.save_record = lambda: None
+    launch_log = launch.log
+    launch.log = lambda msg: None
+    try:
+        run.run_evals()
+    finally:
+        launch.log = launch_log
+    (script, args), = started
+    assert script == "play" and args[args.index("--wandb_run") + 1] == "abc123"  # the evaluated run, not the launcher's
+    assert "env.eval_terrain_level=5" in args and "env.randomization.mass_spread=0.2" in args
+    assert args[args.index("--eval_name") + 1] == "eval_mass" and run.record["evals"] == {"eval_mass": 0}
