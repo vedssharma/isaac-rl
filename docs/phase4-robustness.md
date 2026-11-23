@@ -62,7 +62,7 @@ PLAN.md §5.5's levels. Each factor alone, then all of them together:
    doubled depth noise each cost under 1%. The rate loop and a few steps of latency are within what it handles.
 2. **Mass is the first problem, through the altitude channel.** Thrust is commanded relative to the *nominal* weight,
    so a 20% lighter drone gets 25% more lift than it expects and drifts up through the 4 m ceiling (6.6% of
-   episodes); a heavier one sinks (too low). Thrust ±15% does much less because its range is narrower, and it
+   episodes). Heavier drones mostly cope (too low: 0.1%); the policy has more thrust in reserve than it uses. Thrust ±15% does much less because its range is narrower, and it
    doesn't come with an inertia change (the 0.85% flips are the inertia part). The policy has never had to work out
    a weight it doesn't know.
 3. **Wind is the second:** a steady 0–2 m/s wind with gusts pushes the drone into obstacles (collisions 5.2% →
