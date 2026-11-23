@@ -254,7 +254,8 @@ Each phase ends with a **demo video + W&B report**. Don't move on until the exit
   90.5%), distilled from teachers that face where they fly (docs/phase3-depth-student.md §6.1).**
 
 ### Phase 4 — Robustness and difficulty (weeks 9–10)
-- [ ] Domain randomization (§5.5), wind, latency, motor lag
+- [x] Domain randomization (§5.5), wind, latency, motor lag: in the env, off by default (docs/phase4-robustness.md §1)
+- [ ] Train under randomization: the Phase 3 student loses 31% under full randomization, mostly from mass and wind (§2)
 - [ ] Out-of-distribution evaluation: higher density, new primitive types, more noise
 - [ ] Optional: moving obstacles (spawn option B)
 - **Exit:** < 10% drop in success under full randomization compared with nominal.
