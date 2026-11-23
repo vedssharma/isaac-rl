@@ -64,6 +64,8 @@ class DroneNavDepthEnvCfg(DroneNavObstaclesEnvCfg):
     depth_dropout_prob: float = 0.01
     depth_edge_dropout_prob: float = 0.3
     depth_edge_threshold: float = 0.3  # m
+    # Phase 4: multiplies the noise model's Gaussian std, range-dependent std and both dropout probabilities.
+    depth_noise_scale: float = 1.0
 
 
 class DroneNavDepthEnv(DroneNavObstaclesEnv):
@@ -105,13 +107,14 @@ class DroneNavDepthEnv(DroneNavObstaclesEnv):
         depth = self.clean_depth()
         if not self.cfg.depth_noise:
             return depth
+        k = self.cfg.depth_noise_scale
         return depth_mdp.add_depth_noise(
             depth,
             self.cfg.depth_camera.max_distance,
-            self.cfg.depth_gaussian_std,
-            self.cfg.depth_range_std,
-            self.cfg.depth_dropout_prob,
-            self.cfg.depth_edge_dropout_prob,
+            self.cfg.depth_gaussian_std * k,
+            self.cfg.depth_range_std * k,
+            min(self.cfg.depth_dropout_prob * k, 1.0),
+            min(self.cfg.depth_edge_dropout_prob * k, 1.0),
             self.cfg.depth_edge_threshold,
         )
 

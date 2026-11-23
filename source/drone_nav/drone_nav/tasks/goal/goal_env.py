@@ -21,9 +21,28 @@ from isaaclab.utils.math import quat_from_euler_xyz, subtract_frame_transforms
 
 from drone_nav.control.rate_controller import rate_command, rate_controller_torque
 from drone_nav.mdp import goal as mdp
+from drone_nav.mdp import randomization as rnd
 
 from isaaclab_assets import CRAZYFLIE_CFG  # isort: skip
 from isaaclab.markers import SPHERE_MARKER_CFG  # isort: skip
+
+
+@configclass
+class RandomizationCfg:
+    """Phase 4 domain randomization (PLAN.md §5.5; drone_nav/mdp/randomization.py), drawn per env at every reset.
+    Every setting at 0 (the default) is the nominal task, and draws no random numbers. Scalars, not ranges, so that
+    Hydra overrides (env.randomization.<name>=<value>) type-check."""
+
+    mass_spread: float = 0.0  # mass x U(1 - s, 1 + s); inertia scales with it (thrust and rate loop stay nominal)
+    inertia_spread: float = 0.0  # inertia x a further U(1 - s, 1 + s)
+    thrust_spread: float = 0.0  # true thrust per commanded thrust x U(1 - s, 1 + s): motor-constant mismatch
+    motor_tau_max: float = 0.0  # s: thrust and torques follow their commands with a first-order lag, tau ~ U(0, max)
+    drag_spread: float = 0.0  # drag coefficient x U(1 - s, 1 + s)
+    latency_max_steps: int = 0  # control steps (20 ms each) between command and motors, ~ U{0, ..., max}
+    wind_speed_max: float = 0.0  # m/s: steady horizontal wind, random direction, speed ~ U(0, max), via the drag model
+    gust_std: float = 0.0  # m/s per horizontal axis: Ornstein-Uhlenbeck gusts on top of the wind
+    gust_tau: float = 2.0  # s: the gusts' correlation time
+    obs_noise_scale: float = 0.0  # x rnd.OBS_NOISE_STD Gaussian noise on the 18 goal/motion inputs
 
 
 @configclass
@@ -121,6 +140,7 @@ class DroneNavGoalEnvCfg(DirectRLEnvCfg):
     obs_goal_dist_clip = 10.0
 
     rewards: RewardWeightsCfg = RewardWeightsCfg()
+    randomization: RandomizationCfg = RandomizationCfg()
 
 
 @configclass
@@ -173,6 +193,7 @@ class DroneNavGoalEnv(DirectRLEnv):
             else 0.0
         )
         self._max_speed = torch.zeros(n, device=dev)
+        self._setup_randomization(action_dim)
 
         self.set_debug_vis(self.cfg.debug_vis)
 
@@ -198,11 +219,22 @@ class DroneNavGoalEnv(DirectRLEnv):
     def _pre_physics_step(self, actions: torch.Tensor):
         self._prev_actions = self._actions.clone()
         self._actions = actions.clone().clamp(-1.0, 1.0)
-        self._thrust[:, 0, 2] = self.cfg.thrust_to_weight * self._robot_weight * (self._actions[:, 0] + 1.0) / 2.0
+        # What reaches the motors: the command, or (with latency) the one from a few steps ago. The observation keeps
+        # the policy's own last command (self._actions).
+        applied = self._actions
+        if self._delay is not None:
+            self._delay.push(self._actions)
+            applied = self._delay.delayed(self._latency)
+        thrust = self.cfg.thrust_to_weight * self._robot_weight * (applied[:, 0] + 1.0) / 2.0
+        self._thrust[:, 0, 2] = thrust * self._thrust_scale if self.cfg.randomization.thrust_spread > 0 else thrust
         if self.cfg.action_type == "ctbr":
-            self._rate_cmd = rate_command(self._actions[:, 1:], self.cfg.max_body_rates)
+            self._rate_cmd = rate_command(applied[:, 1:], self.cfg.max_body_rates)
         else:
-            self._moment[:, 0, :] = self.cfg.moment_scale * self._actions[:, 1:]
+            self._moment[:, 0, :] = self.cfg.moment_scale * applied[:, 1:]
+        r = self.cfg.randomization
+        if r.gust_std > 0:
+            noise = torch.randn(self.num_envs, 2, device=self.device)
+            self._gust_w[:, :2] = rnd.ou_step(self._gust_w[:, :2], self.step_dt, r.gust_tau, r.gust_std, noise)
 
     def _apply_action(self):
         # Called every physics substep, so drag and the rate loop use the current velocities. Body frame.
@@ -214,12 +246,76 @@ class DroneNavGoalEnv(DirectRLEnv):
                 self.cfg.rate_kp,
                 self.cfg.moment_scale,
             )
-        forces = self._thrust
+        r = self.cfg.randomization
+        thrust, moment = self._thrust, self._moment
+        if r.motor_tau_max > 0:
+            # Motors follow their commands with a first-order lag; a freshly reset drone starts at the command.
+            fresh = self._lag_fresh.view(-1, 1, 1)
+            lagged_t = rnd.first_order_lag(self._thrust_applied, self._thrust, self._motor_alpha)
+            lagged_m = rnd.first_order_lag(self._moment_applied, self._moment, self._motor_alpha)
+            self._thrust_applied = torch.where(fresh, self._thrust, lagged_t)
+            self._moment_applied = torch.where(fresh, self._moment, lagged_m)
+            self._lag_fresh[:] = False
+            thrust, moment = self._thrust_applied, self._moment_applied
+        forces = thrust
         if self._drag_k:
-            forces = forces + mdp.drag_force(self._robot.data.root_lin_vel_b, self._drag_k).unsqueeze(1)
+            vel = self._robot.data.root_lin_vel_b
+            if r.wind_speed_max > 0 or r.gust_std > 0:
+                vel = vel - rnd.world_to_body(self._wind_w + self._gust_w, self._robot.data.root_quat_w)
+            drag = mdp.drag_force(vel, self._drag_k)
+            if r.drag_spread > 0:
+                drag = drag * self._drag_scale[:, None]
+            forces = forces + drag.unsqueeze(1)
         self._robot.permanent_wrench_composer.set_forces_and_torques(
-            body_ids=self._body_id, forces=forces, torques=self._moment
+            body_ids=self._body_id, forces=forces, torques=moment
         )
+
+    # -- domain randomization (cfg.randomization)
+
+    def _setup_randomization(self, action_dim: int) -> None:
+        r, n, dev = self.cfg.randomization, self.num_envs, self.device
+        self._thrust_scale = torch.ones(n, device=dev)
+        self._drag_scale = torch.ones(n, device=dev)
+        self._motor_alpha = torch.ones(n, device=dev)
+        self._lag_fresh = torch.ones(n, dtype=torch.bool, device=dev)
+        self._thrust_applied = torch.zeros(n, 1, 3, device=dev)
+        self._moment_applied = torch.zeros(n, 1, 3, device=dev)
+        self._wind_w = torch.zeros(n, 3, device=dev)
+        self._gust_w = torch.zeros(n, 3, device=dev)
+        self._latency = torch.zeros(n, dtype=torch.long, device=dev)
+        self._delay = rnd.ActionDelay(n, action_dim, r.latency_max_steps, dev) if r.latency_max_steps > 0 else None
+        self._obs_noise_std = torch.tensor(rnd.OBS_NOISE_STD, device=dev) * r.obs_noise_scale
+        if r.mass_spread > 0 or r.inertia_spread > 0:
+            view = self._robot.root_physx_view
+            self._base_masses = view.get_masses().clone()  # CPU; after any cfg.mass_scale
+            self._base_inertias = view.get_inertias().clone()
+
+    def _randomize(self, env_ids: torch.Tensor) -> None:
+        """Draw this episode's randomization for envs `env_ids` (only the parts that are on)."""
+        r, n, dev = self.cfg.randomization, len(env_ids), self.device
+        if r.thrust_spread > 0:
+            self._thrust_scale[env_ids] = rnd.sample_scale(n, r.thrust_spread, dev)
+        if r.drag_spread > 0:
+            self._drag_scale[env_ids] = rnd.sample_scale(n, r.drag_spread, dev)
+        if r.motor_tau_max > 0:
+            tau = torch.rand(n, device=dev) * r.motor_tau_max
+            self._motor_alpha[env_ids] = rnd.lag_alpha(self.physics_dt, tau)
+            self._lag_fresh[env_ids] = True
+        if self._delay is not None:
+            self._latency[env_ids] = torch.randint(0, r.latency_max_steps + 1, (n,), device=dev)
+            self._delay.reset(env_ids)
+        if r.wind_speed_max > 0:
+            self._wind_w[env_ids] = rnd.horizontal_wind(n, r.wind_speed_max, dev)
+        if r.gust_std > 0:
+            self._gust_w[env_ids, :2] = torch.randn(n, 2, device=dev) * r.gust_std  # start in the stationary state
+        if r.mass_spread > 0 or r.inertia_spread > 0:
+            view, ids = self._robot.root_physx_view, env_ids.cpu()
+            scale = rnd.sample_scale(n, r.mass_spread, "cpu")
+            masses, inertias = self._base_masses.clone(), self._base_inertias.clone()
+            masses[ids] *= scale[:, None]
+            inertias[ids] *= (scale * rnd.sample_scale(n, r.inertia_spread, "cpu"))[:, None, None]
+            view.set_masses(masses, ids)
+            view.set_inertias(inertias, ids)
 
     # -- MDP
 
@@ -237,6 +333,8 @@ class DroneNavGoalEnv(DirectRLEnv):
             ],
             dim=-1,
         )
+        if self.cfg.randomization.obs_noise_scale > 0:
+            obs = obs + torch.randn_like(obs) * self._obs_noise_std
         return {"policy": obs}
 
     def _get_dones(self) -> tuple[torch.Tensor, torch.Tensor]:
@@ -295,6 +393,7 @@ class DroneNavGoalEnv(DirectRLEnv):
         self._log_episodes(env_ids)
 
         self._robot.reset(env_ids)
+        self._randomize(env_ids)
         super()._reset_idx(env_ids)
         if len(env_ids) == self.num_envs:
             # Spread out the resets to avoid spikes in training when many environments reset at a similar time
