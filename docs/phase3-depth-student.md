@@ -15,6 +15,8 @@ Status:
 - [x] Distilled from it (§6): 94.4% success, 2.7% collisions on held-out level 5 from depth alone (seed 42)
 - [x] **Three seeds (§6.1): 93.4% ± 2.6 success, 4.9% ± 3.9 collisions; every seed ≥ 90.5%. G3 is met.**
 - [x] Its failures (§8): climbing happens at walls whose door is out of view; poles are seen but are 1–2 pixels wide
+- [x] A soft ceiling in the teacher's reward (§9): climbing goes to 0 for teacher and student; one seed, the student's
+  net result (91.5% / 6.35%) is inside the old seed spread, so seeds 1 and 2 would be needed to call it better or worse
 - [ ] Option B: PPO from depth with an asymmetric critic
 - [ ] GRU memory
 - **Exit (G3):** ≥ 85% success at difficulty 5 from depth only.
@@ -436,4 +438,51 @@ the example the drone flies straight at a pole that is centred in the image from
   - *Edge dropout that spares thin objects,* though that's a question of what a real sensor does.
 
 Both are now under 3% each, and G3 is met with margin. So these are improvements for Phase 4/5, not blockers.
+
+## 9. Fixing the climbing: a soft ceiling
+
+§8.1 found the student climbing at walls whose door was out of view, inherited from its teacher. The heading term
+explains why the teacher does it: it scores only *horizontal* velocity. A drone stuck nose-to-wall pays the full
+heading penalty for sliding sideways along the wall (θ = 90°), but nothing for going up. Going up was the free
+direction.
+
+**The term** (commit `a5fe5de`): `env.rewards.altitude` (default 0.0, so earlier runs reproduce) costs
+`w × max(altitude − altitude_soft_ceiling, 0)` per second, with the soft ceiling at 3 m. The highest goals are at
+2.5 m, so normal flight never pays it. At w = 2.0, a drone at 3.5 m pays 1 per second, rising to 2 at the 4 m hard
+ceiling. Sliding sideways along a wall costs the heading term 1 per second at 1 m/s or faster (less when slower),
+so climbing is now no cheaper than sliding. A CPU test
+covers it.
+
+**Runs** (seed 42, otherwise exactly §5–6), both with failure recording in the evaluation:
+- the teacher: `p3-teacher-heading-alt-s42`
+  ([vam5p6dd](https://forge.coreweave.com/wandb/vedssharma1/isaac-rl/runs/vam5p6dd)), `env.rewards.heading=1.0
+  env.rewards.altitude=2.0`, $0.50;
+- the student distilled from it: `p3-distill-heading-alt-s42`
+  ([51ivdi6f](https://forge.coreweave.com/wandb/vedssharma1/isaac-rl/runs/51ivdi6f)), $1.19.
+
+| Held-out level 5 (seed 42) | Heading teacher | **+ soft ceiling** | Heading student | **+ soft ceiling** |
+|---|---:|---:|---:|---:|
+| Success | 89.2% | **92.7%** | 94.4% | **91.5%** |
+| Collisions | 7.05% | 6.75% | 2.7% | 6.35% |
+| … poles | 2.9% | 4.95% | 2.25% | 4.65% |
+| … cylinders / boxes / walls / side walls | 1.8 / 0.95 / 0.5 / 0.9% | 1.0 / 0.35 / 0.45 / 0% | 0.3 / 0.05 / 0.05 / 0.05% | 0.75 / 0.35 / 0.55 / 0.05% |
+| **Too high** | 2.3% | **0%** | 2.85% | **0%** |
+| Time-out / flipped | 0.9 / 0.55% | 0.35 / 0.2% | 0.05 / 0% | **1.65** / 0% |
+| Direction of travel in view | 98.6% | 96.7% | 98.7% | 97.6% |
+| Time to goal / path efficiency | 8.5 s / 0.87 | 8.5 s / 0.89 | 8.4 s / 0.89 | 8.5 s / 0.91 |
+
+1. **Climbing is gone** for both teacher and student (2.3% and 2.85% → 0), and the teacher gets better overall
+   (89.2% → 92.7%). The ceiling term costs it 0.04 per episode on average, so it hardly ever goes above 3 m.
+2. **The student trades climbing for getting stuck and for poles.**
+   - Time-outs rise from 0.05% to 1.65%, as §8.3 expected: with climbing ruled out, a drone at a doorless stretch
+     of wall sometimes doesn't find the door before the 20 s limit.
+   - Pole hits double (2.25% → 4.65%), but this seed's teacher is also worse on poles (2.9% → 4.95%), and pole
+     rates already ranged 2.25–5.9% across §6.1's three students. One seed can't separate the ceiling term from
+     seed-to-seed spread.
+   - Net, the student's 91.5% is inside §6.1's 90.5–95.3% range.
+3. **So the fix does what it was meant to** (no more crashing through the ceiling). Whether it makes the *student*
+   better overall needs seeds 1 and 2 (about $3.50 more at these costs). The underlying limitation, not knowing
+   which way the door is once it's out of view, remains. Memory (the GRU) or a wider view is the real fix for that.
+
+Cost: $1.69 (teacher $0.50, student $1.19).
 
