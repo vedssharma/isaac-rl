@@ -217,7 +217,7 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
         student = depth_student.load_student(ckpt_data, env.unwrapped.device)
 
         def policy(obs):
-            return student(obs["policy"])
+            return student.act(obs["policy"])  # a recurrent student keeps its memory; reset_policy clears it
 
         reset_policy = student.reset
     else:

@@ -4,7 +4,7 @@ The student reads Drone-Nav-Depth-v0's "policy" observation: the goal task's 18 
 action, goal, altitude) followed by a depth image scaled to [0, 1], flattened row-major. A CNN encodes the image to
 a 64-d latent; the 18 inputs go through a running normalizer (like RSL-RL's empirical normalization); an MLP maps
 both to the 4 CTBR actions. scripts/distill.py trains it to imitate the frozen Phase 2 teacher (DAgger), and
-scripts/play.py evaluates its checkpoints.
+scripts/play.py evaluates its checkpoints. RecurrentDepthStudent adds a GRU memory.
 """
 
 from __future__ import annotations
@@ -101,15 +101,81 @@ class DepthStudent(nn.Module):
             raise ValueError(f"expected {self.obs_dim} inputs ({self.proprio_dim} + image), got {obs.shape[-1]}")
         return obs[:, : self.proprio_dim], obs[:, self.proprio_dim :].reshape(-1, 1, *self.image_hw)
 
-    def forward(self, obs: torch.Tensor) -> torch.Tensor:
+    is_recurrent = False
+
+    def features(self, obs: torch.Tensor) -> torch.Tensor:
+        """(n, proprio_dim + latent_dim): the normalized goal/proprio inputs and the image's latent."""
         proprio, image = self.split(obs)
-        return self.mlp(torch.cat([self.normalizer(proprio), self.encoder(image)], dim=-1))
+        return torch.cat([self.normalizer(proprio), self.encoder(image)], dim=-1)
+
+    def forward(self, obs: torch.Tensor) -> torch.Tensor:
+        return self.mlp(self.features(obs))
+
+    def act(self, obs: torch.Tensor) -> torch.Tensor:
+        """Actions for one step of a rollout (play.py). Stateless here; RecurrentDepthStudent keeps its memory."""
+        return self(obs)
 
     def update_normalizer(self, obs: torch.Tensor) -> None:
         self.normalizer.update(obs[:, : self.proprio_dim])
 
     def reset(self, dones: torch.Tensor | None = None) -> None:
-        """No memory yet (a GRU comes later); for play.py's loop, which resets recurrent policies."""
+        """Forget the episodes that just ended (play.py calls this after every step). Nothing to forget here."""
+
+
+class RecurrentDepthStudent(DepthStudent):
+    """DepthStudent with a GRU between the features and the MLP head (PLAN.md §4.5's optional memory), so that what
+    left the camera's view (the door of a wall it is now facing, a pole that dropped out of a frame) can still
+    shape its actions.
+
+    - step(obs, h) advances every env one step from hidden state h (rollouts);
+    - forward_sequence(obs, h0, starts) runs a whole rollout window for truncated backpropagation through time,
+      zeroing the memory of each env at the steps where its episode started;
+    - act(obs) / reset(dones) keep their own hidden state, for play.py.
+    """
+
+    is_recurrent = True
+
+    def __init__(self, *args, gru_hidden: int = 256, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.config["gru_hidden"] = gru_hidden
+        self.gru_hidden = gru_hidden
+        self.gru = nn.GRUCell(self.proprio_dim + self.config["latent_dim"], gru_hidden)
+        self.mlp = _mlp([gru_hidden, *self.config["hidden_dims"], self.config["num_actions"]])
+        self._state: torch.Tensor | None = None
+
+    def initial_state(self, n: int, device: str | torch.device | None = None) -> torch.Tensor:
+        return torch.zeros(n, self.gru_hidden, device=device)
+
+    def step(self, obs: torch.Tensor, h: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        h = self.gru(self.features(obs), h)
+        return self.mlp(h), h
+
+    def forward_sequence(self, obs: torch.Tensor, h0: torch.Tensor, starts: torch.Tensor) -> torch.Tensor:
+        """obs (T, B, obs_dim), h0 (B, gru_hidden), starts (T, B) bool -> actions (T, B, num_actions). starts[t]
+        marks envs whose step t is the first of a new episode: their memory is zeroed before that step."""
+        T, B = obs.shape[:2]
+        feats = self.features(obs.reshape(T * B, -1)).reshape(T, B, -1)  # the CNN on every frame at once
+        h, hs = h0, []
+        for t in range(T):
+            h = torch.where(starts[t][:, None], torch.zeros_like(h), h)
+            h = self.gru(feats[t], h)
+            hs.append(h)
+        return self.mlp(torch.stack(hs))
+
+    def forward(self, obs: torch.Tensor) -> torch.Tensor:
+        raise TypeError("a recurrent student needs its memory: use step(), forward_sequence() or act()")
+
+    def act(self, obs: torch.Tensor) -> torch.Tensor:
+        if self._state is None or self._state.shape[0] != obs.shape[0]:
+            self._state = self.initial_state(obs.shape[0], obs.device)
+        actions, self._state = self.step(obs, self._state)
+        return actions
+
+    def reset(self, dones: torch.Tensor | None = None) -> None:
+        if dones is None:
+            self._state = None
+        elif self._state is not None:
+            self._state = torch.where(dones.bool()[:, None], torch.zeros_like(self._state), self._state)
 
 
 def checkpoint(student: DepthStudent, iteration: int, extra: dict | None = None) -> dict:
@@ -130,7 +196,10 @@ def load_student(ckpt: dict, device: str | torch.device = "cpu") -> DepthStudent
     if not is_student_checkpoint(ckpt):
         raise ValueError("not a depth-student checkpoint")
     cfg = ckpt["config"]
-    student = DepthStudent(
+    extra = {"gru_hidden": cfg["gru_hidden"]} if cfg.get("gru_hidden") else {}
+    cls = RecurrentDepthStudent if extra else DepthStudent
+    student = cls(
+        **extra,
         proprio_dim=cfg["proprio_dim"],
         image_hw=tuple(cfg["image_hw"]),
         latent_dim=cfg["latent_dim"],

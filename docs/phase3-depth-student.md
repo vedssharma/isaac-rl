@@ -15,10 +15,11 @@ Status:
 - [x] Distilled from it (§6): 94.4% success, 2.7% collisions on held-out level 5 from depth alone (seed 42)
 - [x] **Three seeds (§6.1): 93.4% ± 2.6 success, 4.9% ± 3.9 collisions; every seed ≥ 90.5%. G3 is met.**
 - [x] Its failures (§8): climbing happens at walls whose door is out of view; poles are seen but are 1–2 pixels wide
-- [x] A soft ceiling in the teacher's reward (§9): climbing goes to 0 for teacher and student; one seed, the student's
-  net result (91.5% / 6.35%) is inside the old seed spread, so seeds 1 and 2 would be needed to call it better or worse
+- [x] A soft ceiling in the teacher's reward (§9): climbing goes to 0. Over 3 seeds (§9.1) the teachers improve
+  (93.3% against 91.2%), but the students don't: 92.5% / 6.1% against 93.4% / 4.9%, within noise
 - [ ] Option B: PPO from depth with an asymmetric critic
-- [ ] GRU memory
+- [x] GRU memory (§10–10.1): **94.6% ± 0.4 success, 4.7% ± 0.8 collisions over 3 seeds**, the best and most
+  consistent students. The worst GRU seed (94.15%) is above the mean of either feed-forward set
 - **Exit (G3):** ≥ 85% success at difficulty 5 from depth only.
 
 **The teacher** (docs/phase2-obstacles.md §18): `p2-slow-margin15-nearest4-s42`
@@ -485,4 +486,141 @@ covers it.
    which way the door is once it's out of view, remains. Memory (the GRU) or a wider view is the real fix for that.
 
 Cost: $1.69 (teacher $0.50, student $1.19).
+
+### 9.1 Three seeds: better teachers, the same students
+
+Seeds 1 and 2 of the soft-ceiling setup, run exactly like seed 42: teachers
+([56j6n22n](https://forge.coreweave.com/wandb/vedssharma1/isaac-rl/runs/56j6n22n) s1,
+[arrqs6y5](https://forge.coreweave.com/wandb/vedssharma1/isaac-rl/runs/arrqs6y5) s2), then a student from each
+([xfh9rqsi](https://forge.coreweave.com/wandb/vedssharma1/isaac-rl/runs/xfh9rqsi) s1,
+[d5f3wha0](https://forge.coreweave.com/wandb/vedssharma1/isaac-rl/runs/d5f3wha0) s2). Commit `c0c7cbd`. Same 60
+held-out level-5 layouts, 2000 episodes each, 0.1 m rule. Against §6.1's heading-only runs:
+
+| Held-out level 5, mean ± SD over 3 seeds | Heading teachers | **+ soft ceiling** | Heading students | **+ soft ceiling** |
+|---|---:|---:|---:|---:|
+| **Success** | 91.2 ± 1.8 | **93.3 ± 0.8** | 93.4 ± 2.6 | **92.5 ± 2.2** |
+| **Collisions** | 6.7 ± 0.9 | 6.1 ± 0.6 | 4.9 ± 3.9 | 6.1 ± 1.2 |
+| … poles | 3.5 | 4.1 | 3.5 | 4.6 |
+| **Too high** | 1.3 | **0.03** | 1.4 | **0** |
+| Time-out | 0.47 | 0.4 | 0.27 | 1.2 |
+| Per seed: success s42 / s1 / s2 | 89.2 / 92.6 / 91.75 | 92.7 / 94.2 / 93.0 | 94.4 / 90.5 / 95.3 | 91.5 / 95.1 / 91.0 |
+| Per seed: collisions s42 / s1 / s2 | 7.05 / 7.35 / 5.65 | 6.75 / 5.5 / 6.04 | 2.7 / 9.4 / 2.65 | 6.35 / 4.85 / 7.2 |
+
+All in % of episodes. Every soft-ceiling run faces forward 96.7–97.9% of the time.
+
+1. **The soft ceiling makes better teachers:** +2.1 points of success, every seed above every heading-only seed
+   (narrowly: 92.7 against 92.6), and less than half the spread. Climbing is gone (0.03%), and collisions dip slightly.
+2. **It doesn't make better students.** The mean success is 0.9 points lower and collisions 1.2 points higher, both
+   well inside the seed spread. Climbing is gone here too, but it turns into the two things §8.3 expected:
+   - more time-outs (1.2% against 0.27%): drones stuck at a doorless wall until the 20 s limit;
+   - a few more pole hits (4.6% against 3.5%; the teachers moved the same way, 3.5 → 4.1%).
+3. **Why the two differ:** a teacher sees 360°, so once climbing is ruled out it slides the right way to the door. A
+   student at the same wall can't see which way the door is, so it imitates the slide as best it can, and sometimes
+   that's the wrong way or not at all. The soft ceiling removes the symptom (flying into the ceiling); the cause is
+   the student's missing information.
+4. **G3 holds either way:** the worst student in both sets is above 90%.
+
+**Decision:** leave `env.rewards.altitude` off by default and don't adopt it for the Phase 3 student. It's neutral
+for the student, and crashing into the ceiling is a clear, attributable failure, while stalling at a wall is not.
+It's the better teacher setting if a teacher is ever needed on its own. The real fix for doorless walls is memory
+(PLAN.md's GRU: the door is usually visible on the approach) or a wider field of view.
+
+**Infrastructure:** both student boxes took about 13 minutes to delete, which is most of why seed 1's run shows 78
+minutes ($2.26). Seed 2's price lookup failed during the launcher's accounting, so its cost is computed by hand: 1.08
+h × $1.74 = $1.88. Cost of the two seeds: teachers $0.50 + $0.46, students $2.26 + $1.88, $5.10 in all.
+
+## 10. A student with memory (GRU)
+
+§8–9.1 left one failure that a feed-forward student can't fix. At a wall whose door has gone out of view, it can't
+tell which way the door is, so it climbs (heading teacher) or stalls until the time limit (soft-ceiling teacher). The
+door is usually in view on the approach, so memory should help. This is PLAN.md §4.5's optional GRU.
+
+**The student** (`RecurrentDepthStudent`, commit `9c5fb43`, 0.65M parameters): the same CNN encoder and normalizer,
+then a GRU cell (256 units), then the same MLP head.
+- `step(obs, h)` advances every env one step;
+- `forward_sequence(obs, h0, starts)` runs a whole window, zeroing an env's memory at the step its episode starts;
+- `act(obs)` / `reset(dones)` keep the memory per env for `play.py`.
+
+**Training** (`distill.py --gru_hidden 256`) is DAgger with truncated backpropagation through time:
+- the rollout carries each env's hidden state, zeroed when its episode resets;
+- each window stores the hidden state it started from, and the steps where episodes started;
+- training replays each env's whole window through the GRU from that state.
+
+Windows are 48 steps (0.96 s) instead of 24, and minibatches are 8 groups of envs. CPU tests check:
+- stepping one frame at a time with resets matches `forward_sequence` exactly;
+- `act`/`reset` keep and clear memory per env;
+- checkpoints round-trip;
+- a memory task: a cue in the first frame decides the target action at every later step; the GRU learns it and the
+  feed-forward student stays at chance.
+
+**Runs:**
+- A smoke run (`p3-distill-gru-smoke-s42`, 1024 envs, 20 iterations, $0.20) checked the GPU path and `play.py`'s
+  evaluation of a recurrent checkpoint.
+- The full run (`p3-distill-gru-alt-s42`, [uke1cqz8](https://forge.coreweave.com/wandb/vedssharma1/isaac-rl/runs/uke1cqz8)):
+  4096 envs, 500 iterations × 48 steps, the same experience as the feed-forward student's 1000 × 24, with the
+  teacher's share decaying over the first 50. 4.1–4.4 s per iteration, 37 minutes, $1.26.
+
+Its teacher is the soft-ceiling teacher (§9, `vam5p6dd`, seed 42), because that's where the feed-forward student's
+failure was clearly about memory (stalling at walls). The comparison is the feed-forward student from the same
+teacher (§9, `51ivdi6f`).
+
+| Held-out level 5, seed 42, soft-ceiling teacher | Teacher | Feed-forward student | **GRU student** |
+|---|---:|---:|---:|
+| **Success** | 92.7% | 91.5% (CI 90.2–92.6) | **94.75%** (CI 93.7–95.6) |
+| **Collisions** | 6.75% | 6.35% | **5.2%** |
+| … poles | 4.95% | 4.65% | 4.6% |
+| … cylinders / boxes / walls / side walls | 1.0 / 0.35 / 0.45 / 0% | 0.75 / 0.35 / 0.55 / 0.05% | 0.45 / 0.05 / 0.1 / 0% |
+| **Time-out** | 0.35% | 1.65% | **0.05%** |
+| Too high | 0% | 0% | 0% |
+| Direction of travel in view | 96.7% | 97.6% | 97.7% |
+| Time to goal / path efficiency | 8.5 s / 0.89 | 8.5 s / 0.91 | 8.5 s / 0.89 |
+
+1. **Memory fixes the wall problem.** Time-outs, the drones stuck at a doorless stretch of wall, fall from 1.65% to
+   0.05%. Wall, box and cylinder hits fall too (1.65% → 0.6% together).
+2. **It doesn't help with poles** (4.65% → 4.6%). A pole is 1–3 pixels wide and in view the whole time (§8.2);
+   remembering it doesn't make it bigger. Poles are now 88% of this student's collisions.
+3. **The GRU student beats its own teacher** (94.75% against 92.7%), and on this seed it's the best student from
+   either teacher (the heading-only seed-42 student was 94.4%, with 2.85% climbing).
+4. The success CIs of the two students don't overlap, but students varied by about 2 points between seeds (§6.1,
+   §9.1). Seeds 1 and 2 from the existing soft-ceiling teachers (`56j6n22n`, `arrqs6y5`) would settle it, at about
+   $2.60.
+
+### 10.1 Three seeds: the best and most consistent students
+
+Seeds 1 and 2 of the GRU student, distilled from the existing soft-ceiling teachers of the same seeds (§9.1,
+`56j6n22n` and `arrqs6y5`), exactly like seed 42: `p3-distill-gru-alt-s1`
+([x5bl74jf](https://forge.coreweave.com/wandb/vedssharma1/isaac-rl/runs/x5bl74jf)) and `p3-distill-gru-alt-s2`
+([gik2yxvq](https://forge.coreweave.com/wandb/vedssharma1/isaac-rl/runs/gik2yxvq)), commit `cc67678`.
+
+| Held-out level 5 | GRU: s42 / s1 / s2 | **GRU mean ± SD** | Feed-forward, same teachers (§9.1) | Feed-forward, heading teachers (§6.1) |
+|---|---|---:|---:|---:|
+| **Success** | 94.75 / 94.8 / 94.15 | **94.6 ± 0.4** | 92.5 ± 2.2 | 93.4 ± 2.6 |
+| **Collisions** | 5.2 / 5.15 / 3.85 | **4.7 ± 0.8** | 6.1 ± 1.2 | 4.9 ± 3.9 |
+| … poles | 4.6 / 4.0 / 3.45 | 4.0 | 4.6 | 3.5 |
+| … cylinders, boxes, walls, side walls | 0.6 / 1.15 / 0.4 | 0.7 | 1.5 | 1.4 |
+| Time-out | 0.05 / 0.05 / 1.95 | 0.7 | 1.2 | 0.27 |
+| Too high | 0 / 0 / 0.05 | 0.02 | 0 | 1.4 |
+
+All in % of episodes.
+
+1. **The GRU students are the best and by far the most consistent:** mean success 94.6% with an SD of 0.4 points,
+   against 2.2–2.6 for either feed-forward set. The worst GRU seed (94.15%) is above the mean of both feed-forward
+   sets. Against the feed-forward students from the same teachers, success is +2.0 points and collisions −1.4.
+   With three seeds a side, Welch's t is 1.6 and 1.7, suggestive rather than conclusive, but the consistency is
+   clear.
+2. **Memory fixes stalling at walls on two seeds of three.** Seed 42 went from 1.65% time-outs to 0.05%; seed 1's
+   feed-forward student never stalled. Seed 2 still stalls (1.95%, against 1.8% without memory), and its own
+   teacher stalls too (0.8%), the most of the three. It's consistent with the earlier pattern that a student
+   inherits its teacher's habits, but it isn't proven.
+3. **Poles are what's left:** 4.0% of episodes, 85% of the GRU students' collisions. Memory moved them only
+   slightly (4.6% → 4.0%). They're seen but tiny (§8.2), so the levers are resolution and the noise model, not
+   memory.
+
+**The Phase 3 student is the GRU student** (`RecurrentDepthStudent`, 256 units) distilled from a teacher with the
+heading and soft-ceiling terms: 94.6% ± 0.4 success, 4.7% ± 0.8 collisions on held-out level 5 from depth images
+alone. Seed 1 (`x5bl74jf`, 94.8%) or seed 42 (`uke1cqz8`, 94.75%) are the checkpoints to carry into Phase 4.
+
+Cost: $3.39 (seed 1 on Nebius, 53 min: its price lookup failed in the launcher, so it's computed as 0.88 h × $2.18
+= $1.93; seed 2 $1.46). The first attempt at launching these two never started: a zsh loop passed `"1 56j6n22n"` as
+one argument, the launcher's run-name check rejected it, and nothing was created.
 

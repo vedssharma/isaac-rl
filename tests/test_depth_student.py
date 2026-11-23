@@ -99,3 +99,95 @@ def test_a_few_steps_of_imitation_fit_a_fixed_teacher():
             loss.backward()
             opt.step()
     assert ds.imitation_loss(student(obs), target).item() < 0.1 * first
+
+
+# -- the recurrent student
+
+
+def small_recurrent(**kw):
+    return ds.RecurrentDepthStudent(latent_dim=8, hidden_dims=(32,), channels=(4, 8, 8, 8), gru_hidden=16, **kw)
+
+
+def test_recurrent_step_by_step_matches_the_sequence_with_resets():
+    torch.manual_seed(0)
+    student = small_recurrent()
+    T, B = 6, 3
+    obs = torch.rand(T, B, P + H * W)
+    starts = torch.zeros(T, B, dtype=torch.bool)
+    starts[3, 1] = True  # env 1 starts a new episode at step 3
+    h0 = torch.randn(B, 16)
+    seq = student.forward_sequence(obs, h0, starts)
+    h, outs = h0, []
+    for t in range(T):
+        h = torch.where(starts[t][:, None], torch.zeros_like(h), h)
+        a, h = student.step(obs[t], h)
+        outs.append(a)
+    torch.testing.assert_close(seq, torch.stack(outs))
+    # The reset really cuts the memory: env 1 from step 3 on doesn't depend on what came before.
+    other = obs.clone()
+    other[:3, 1] = torch.rand(3, P + H * W)
+    seq2 = student.forward_sequence(other, h0, starts)
+    torch.testing.assert_close(seq2[3:, 1], seq[3:, 1])
+    assert not torch.allclose(seq2[:3, 1], seq[:3, 1])
+
+
+def test_recurrent_act_keeps_memory_and_reset_clears_it():
+    torch.manual_seed(0)
+    student = small_recurrent()
+    a, b = torch.rand(2, P + H * W), torch.rand(2, P + H * W)
+    first = student.act(a)
+    second = student.act(b)
+    fresh = small_recurrent()
+    fresh.load_state_dict(student.state_dict())
+    assert not torch.allclose(second, fresh.act(b))  # b after a differs from b alone
+    student.reset(torch.tensor([True, False]))
+    third = student.act(a)
+    fresh.reset()  # forget everything
+    torch.testing.assert_close(third[0], fresh.act(a)[0])  # env 0 starts over
+    assert first.shape == (2, 4)
+    with pytest.raises(TypeError):
+        student(a)
+
+
+def test_recurrent_checkpoint_round_trip(tmp_path):
+    torch.manual_seed(0)
+    student = small_recurrent()
+    student.update_normalizer(torch.randn(50, P + H * W))
+    torch.save(ds.checkpoint(student, 3), tmp_path / "s.pt")
+    loaded = ds.load_student(torch.load(tmp_path / "s.pt", map_location="cpu", weights_only=False))
+    assert isinstance(loaded, ds.RecurrentDepthStudent) and loaded.gru_hidden == 16
+    obs, starts = torch.rand(4, 2, P + H * W), torch.zeros(4, 2, dtype=torch.bool)
+    h0 = loaded.initial_state(2)
+    expected = student.eval().forward_sequence(obs, h0, starts)
+    torch.testing.assert_close(loaded.forward_sequence(obs, h0, starts), expected)
+    assert not ds.load_student(ds.checkpoint(ds.DepthStudent(), 0)).is_recurrent
+
+
+def test_only_the_recurrent_student_can_use_a_cue_it_no_longer_sees():
+    """A cue in the first frame of each sequence (a bright or a dark image) decides the target action at every later
+    step, when the image is blank. With memory the student learns it; without, the best it can do is the mean."""
+    torch.manual_seed(0)
+    T, B = 6, 64
+    cue = torch.randint(0, 2, (B,)).float()
+    obs = torch.zeros(T, B, P + H * W)
+    obs[0, :, P:] = cue[:, None]
+    target = (cue * 2 - 1)[None, :, None].expand(T, B, 4) * 0.5
+    starts = torch.zeros(T, B, dtype=torch.bool)
+    starts[0] = True
+    gru = small_recurrent()
+    opt = torch.optim.Adam(gru.parameters(), lr=3e-3)
+    for _ in range(150):
+        out = gru.forward_sequence(obs, gru.initial_state(B), starts)
+        loss = ds.imitation_loss(out[1:], target[1:])
+        opt.zero_grad()
+        loss.backward()
+        opt.step()
+    assert loss.item() < 0.02  # remembered
+    mlp = ds.DepthStudent(latent_dim=8, hidden_dims=(32,), channels=(4, 8, 8, 8))
+    opt = torch.optim.Adam(mlp.parameters(), lr=3e-3)
+    for _ in range(150):
+        loss = ds.imitation_loss(mlp(obs[1:].reshape(-1, P + H * W)), target[1:].reshape(-1, 4))
+        opt.zero_grad()
+        loss.backward()
+        opt.step()
+    assert loss.item() > 0.2  # the blank frames carry no cue: about 0.25, the variance of the target
