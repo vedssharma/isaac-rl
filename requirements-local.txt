@@ -7,3 +7,5 @@ python-dotenv==1.2.4
 pytest==8.4.2
 # CPU tests of the obstacle terrain's meshes (Isaac Lab ships its own trimesh on the GPU box).
 trimesh==4.12.2
+# Plotting failure episodes recorded by play.py (scripts/plot_failures.py).
+matplotlib==3.10.7

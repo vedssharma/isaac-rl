@@ -15,6 +15,8 @@ Based on IsaacLab v2.3.2 scripts/reinforcement_learning/rsl_rl/play.py, with the
   per-episode log (extras["log"]). The initial episode-length spread used for training is undone, so every
   evaluated episode gets the full time limit.
 - --video records env 0 for --video_length steps. Drone-Nav tasks point the viewer at env 0's drone.
+- With env.record_failures=K (Drone-Nav-Obstacles/Depth), up to K crashed episodes are saved as
+  failures/<eval_name>/*.npz next to the results, and uploaded with them; scripts/plot_failures.py draws them.
 - Results go to logs/play/<run>/<eval_name>.json. With --wandb_run they are also written to that W&B run's
   summary (<eval_name>/*), and the video and json are uploaded next to its checkpoint on Hugging Face. Hydra
   overrides (e.g. env.mass_scale=1.2) set the evaluation condition; give each condition its own --eval_name.
@@ -78,6 +80,7 @@ import traceback
 from pathlib import Path
 
 import gymnasium as gym
+import numpy as np
 import torch
 from rsl_rl.runners import OnPolicyRunner
 
@@ -167,7 +170,7 @@ def upload_results(out_dir: Path, run, name: str) -> None:
             repo_type="model",
             folder_path=str(out_dir),
             path_in_repo=path_in_repo,
-            allow_patterns=[f"{name}.json", f"videos/{name}/*.mp4"],
+            allow_patterns=[f"{name}.json", f"videos/{name}/*.mp4", f"failures/{name}/*.npz"],
             commit_message=f"{run.name}: evaluation {name}",
         )
         print(f"[INFO] Uploaded the evaluation to https://huggingface.co/{repo_id}/tree/main/{path_in_repo}")
@@ -260,6 +263,18 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     result_file = out_dir / f"{args_cli.eval_name}.json"
     result_file.write_text(json.dumps(summary, indent=2) + "\n")
     print(f"[INFO] Wrote {result_file}")
+
+    # Crashed episodes recorded by the env (env.record_failures=K), for scripts/plot_failures.py.
+    failures = getattr(env.unwrapped, "failure_records", None)
+    if failures:
+        failure_dir = out_dir / "failures" / args_cli.eval_name
+        failure_dir.mkdir(parents=True, exist_ok=True)
+        for i, rec in enumerate(failures):
+            arrays = {k: v for k, v in rec.items() if k != "meta"}
+            np.savez_compressed(
+                failure_dir / f"{i:03d}_{rec['meta']['termination']}.npz", meta=json.dumps(rec["meta"]), **arrays
+            )
+        print(f"[INFO] Wrote {len(failures)} crashed episodes to {failure_dir}")
 
     env.close()  # finishes writing a video that is still recording
     if run is not None:

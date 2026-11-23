@@ -287,3 +287,49 @@ def test_summary_value_falls_back_to_the_summary_file():
     assert wandb_summary.summary_value(run, "hf_url") == "https://hf/x"
     assert wandb_summary.summary_value(run, "missing") is None
     assert wandb_summary.summary_value(_FakeRun({}, None), "hf_url") is None  # no file: None, no exception
+
+
+def test_unreachable_box_gives_up_after_the_limit_and_resets_on_contact():
+    u = launch.Unreachable(limit_s=20 * 60)
+    u.report(True, 0.0)
+    assert not u.exceeded(0.0) and u.seconds(0.0) == 0.0
+    # ssh starts failing at t = 100 s: the clock runs from the first failure, not from each one.
+    for t in range(100, 100 + 20 * 60 + 1, 140):  # a failed poll every ~140 s (120 s timeout + 20 s sleep)
+        u.report(False, float(t))
+    assert u.seconds(1300.0) == 1200.0 and not u.exceeded(1300.0)
+    assert u.exceeded(1301.0)
+    # One answer resets it.
+    u.report(True, 1302.0)
+    assert not u.exceeded(5000.0)
+    u.report(False, 5000.0)
+    assert not u.exceeded(5000.0 + 20 * 60) and u.exceeded(5000.0 + 20 * 60 + 1)
+
+
+def test_max_unreachable_min_default():
+    args, _ = launch.parse_args(["--run-name", "p3-x-s1", "--", "--task", "T"])
+    assert args.max_unreachable_min == 20
+
+
+def test_follow_gives_up_on_a_box_that_stays_running_but_never_answers(monkeypatch, tmp_path):
+    """The 2026-11-20 hang: every ssh poll times out while Brev keeps listing the box RUNNING. follow() must give up
+    after --max-unreachable-min, long before its overall deadline (setup + train limits)."""
+    import subprocess
+    from types import SimpleNamespace
+
+    clock = {"t": 0.0}
+    monkeypatch.setattr(launch.time, "time", lambda: clock["t"])
+    monkeypatch.setattr(launch.time, "sleep", lambda s: clock.__setitem__("t", clock["t"] + s))
+
+    def hung_ssh(*args, **kwargs):
+        clock["t"] += kwargs.get("timeout", 120)
+        raise subprocess.TimeoutExpired(args[0], kwargs.get("timeout", 120))
+
+    monkeypatch.setattr(launch.subprocess, "run", hung_ssh)
+    monkeypatch.setattr(launch, "get_instance", lambda name: {"status": "RUNNING"})
+    monkeypatch.setattr(launch, "log", lambda msg: None)
+    run = object.__new__(launch.Launch)
+    run.args = SimpleNamespace(max_setup_min=40, max_train_min=120, max_unreachable_min=20, quiet=True)
+    run.name, run.remote_run_dir, run.local_dir, run.record = "isaac-rl-x", "/r", tmp_path, {}
+    with pytest.raises(launch.BrevError, match="hasn't answered ssh"):
+        run.follow()
+    assert 20 * 60 < clock["t"] < 25 * 60  # not the 170-minute deadline

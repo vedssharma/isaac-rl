@@ -160,6 +160,7 @@ The exit code is 0 only when training succeeded and the checkpoint was verified.
 | `--box isaac-rl-video` | Reuse an existing instance (starts it if stopped, skips the install, stops it at the end) |
 | `--types a,b,c` | Instance types to try, in order (`brev search --gpu-name L40S` lists them). Env: `BREV_TYPES` |
 | `--max-setup-min 40` / `--max-train-min 120` | Time limits for the install and for `train.py`. The training limit includes Kit's start-up (about 2 min on a new box, which builds its shader caches). At the limit, train.py gets SIGINT: it stops at the next env step, saves `model_<iteration>.pt`, ends the W&B run as failed, the run directory is copied back, and the instance is deleted. Ctrl-C on the laptop does the same. |
+| `--max-unreachable-min 20` | Give up on a box that hasn't answered ssh for this long, even while Brev still lists it RUNNING (a box hung like that on 2026-11-20 and was polled for about 75 minutes; docs/phase3-depth-student.md §6.1). The run is treated as failed and the instance is deleted. A training run's last periodic checkpoint is on W&B; an evaluation can be re-run with `--script play`. |
 | `--boot-timeout-min 12` | How long each instance type gets to reach `RUNNING` |
 | `--keep` | Leave the instance running at the end (for debugging; remember to delete it) |
 | `--ref <commit>` | Run another pushed commit instead of `HEAD` |

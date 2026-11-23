@@ -6,3 +6,4 @@ outputs/
 wandb/
 *.pt
 *.mp4
+videos/*.png

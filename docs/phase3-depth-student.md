@@ -14,6 +14,9 @@ Status:
 - [x] A teacher that faces where it flies (§5): its direction of travel is in view 98.6% of the time, 89.2% / 7.05%
 - [x] Distilled from it (§6): 94.4% success, 2.7% collisions on held-out level 5 from depth alone (seed 42)
 - [x] **Three seeds (§6.1): 93.4% ± 2.6 success, 4.9% ± 3.9 collisions; every seed ≥ 90.5%. G3 is met.**
+- [x] Its failures (§8): climbing happens at walls whose door is out of view; poles are seen but are 1–2 pixels wide
+- [x] A soft ceiling in the teacher's reward (§9): climbing goes to 0 for teacher and student; one seed, the student's
+  net result (91.5% / 6.35%) is inside the old seed spread, so seeds 1 and 2 would be needed to call it better or worse
 - [ ] Option B: PPO from depth with an asymmetric critic
 - [ ] GRU memory
 - **Exit (G3):** ≥ 85% success at difficulty 5 from depth only.
@@ -328,12 +331,158 @@ All in % of episodes. SD is across seeds.
   for about 75 minutes. I deleted the box by hand, the launcher gave up, and the evaluation was re-run on a fresh
   box ($0.68). The hung box ran 2.3 h, about $5.05.
 - **The seed-2 student's Nebius delete took 33 minutes** ($3.39 for that run).
-- The launcher's ssh calls need a timeout and a cap on how long it waits for an unreachable box. That's not fixed
-  yet.
+- Fixed afterwards: each ssh poll already timed out at 120 s, but the launcher only gave up once Brev stopped
+  listing the box RUNNING. `launch.py --max-unreachable-min` (default 20) now gives up on a box that hasn't answered
+  ssh for that long, whatever Brev says, and the normal teardown deletes it. A test replays this hang with a fake
+  clock: the launcher stops after about 20 minutes, not at its 170-minute deadline.
 
 Cost of the two seeds: teachers $0.68 + $0.93, students $5.05 + $3.39, evaluation re-run $0.68, about $10.70 in all.
 
 **Where Phase 3 stands:** Option A (distillation) meets G3. PLAN.md's remaining Phase 3 items are Option B (PPO from
 depth with an asymmetric critic, as a comparison) and a GRU. Neither is needed for G3; both are write-up material.
 The climbing (1.4%) and the residual poles are the obvious things to look at in videos before Phase 4 (robustness).
+
+## 7. Watching the student
+
+PLAN.md asks for a video every phase; this is the first since Phase 1. `p3-student-video-s42` (`launch.py --script
+play ... --video --video_length 1500`, $0.27) evaluated the seed-42 student
+([jziy8wep](https://forge.coreweave.com/wandb/vedssharma1/isaac-rl/runs/jziy8wep)) on the held-out level-5 layouts
+with 64 envs and recorded env 0's chase cam for 30 s. It ran on Crusoe: `--types` excludes AWS, whose boxes can't
+render. Over the 201 episodes it scored 95.0% / 2.5% collisions / 2.5% too high, in line with §6. The video is on
+Hugging Face next to the checkpoint (`play/videos/video_heldout60_l5/`).
+
+**What it shows** (one frame per second): the drone flies level and steadily through cylinders, boxes and poles,
+weaving between them rather than stopping, and reaches its goal (the red sphere) twice in the 30 s. No crash, no
+climbing, and nothing that looks like reward hacking: no hovering, no hugging the side walls, no flying over things.
+
+**What it can't show:** the failures. Climbing (about 1.4%) and pole hits (about 3%) are rare enough that one drone's
+30 s won't contain them. Seeing them needs a targeted capture: log which env fails, and when, in a deterministic
+evaluation, then re-run it with the viewer on that env.
+
+**For Phase 5's videos:** the chase camera sits at a fixed world offset (1 m back and left, 0.45 m up;
+`ViewerCfg(eye=(-1, -1, 0.45))`), so in dense layouts it sometimes ends up inside an obstacle (at 4 s the frame is
+all wall). A camera behind the drone along its heading and higher up, plus PLAN.md's picture-in-picture of the depth
+image, would make better write-up material.
+
+## 8. What the student's failures look like
+
+The video (§7) can't show 1–3% events, so evaluations can now record the failures themselves (commit `11217d1`):
+
+- **Recording:** `env.record_failures=K` keeps every drone's current episode in a per-env buffer: tile-frame path,
+  attitude, velocity, actions, closest lidar reading, and in `Drone-Nav-Depth-v0` the clean depth image as uint8.
+  It saves up to K episodes that end in a crash, with the tile's footprints and the goal.
+- **Saving:** `play.py` writes them to `failures/<eval name>/*.npz` and uploads them with the results.
+- **Plotting:** `scripts/plot_failures.py` (local, matplotlib) draws each one: the tile from above with the path and
+  the heading, the altitude, speed and closest-reading traces, and the depth images of the last 2 s. A CPU test
+  saves a synthetic episode the way play.py does and plots it.
+
+`p3-student-failures-s42`: the seed-42 student
+([jziy8wep](https://forge.coreweave.com/wandb/vedssharma1/isaac-rl/runs/jziy8wep)) on the 60 held-out level-5
+layouts, 2000 episodes, with attribution, `env.record_failures=150`. It took $0.17 and reproduced §6 exactly
+(94.4% / 2.7% / 2.85%), so the recording doesn't change the behaviour. It caught all 111 crashed episodes: 57 too
+high, 54 collisions (45 poles, 6 cylinders, and one each of wall, side wall and box).
+
+### 8.1 Climbing: at walls whose door is out of view
+
+| | Tile has a wall | Within 1.5 m of a wall in the last 3 s |
+|---|---:|---:|
+| **Climbing failures (57)** | **96%** | **96%** |
+| Collisions (54) | 70% | 50% |
+| Level-5 layouts from the generator | about 60% | |
+
+![A climbing failure](images/p3-failure-climb-at-wall.png)
+
+The typical case:
+- The drone flies at a wall where there's no door; the door is metres away along the wall, outside a 90° view.
+- It stops nose-to-wall (speed near 0; the depth image is one dark surface), then slides along the wall toward the
+  door, and climbs at 0.5–1 m/s while it does, until it crosses the 4 m ceiling.
+
+Walls are 5 m tall, so climbing never gets it past one. The climbs happen early in the corridor (median 30% of the
+way along).
+
+That also explains §5–6.1's finding that climbing came in with the heading term, seed by seed. The old teacher saw
+360° (lidar ring and nearest obstacles), so it always knew where the door was. A teacher that faces forward, and its
+student, often don't. The student inherits its teacher's climbing rate: 2.3% → 2.85%, 0 → 0, 1.6% → 1.3%.
+
+### 8.2 Poles: in view, but one or two pixels wide
+
+For each of the 45 pole hits, the camera replay (§2) from the recorded poses shows when the struck pole was in the
+image:
+
+| | |
+|---|---:|
+| In view at least 0.5 s before impact | 100% |
+| In view at least 1 s before impact | 98% (median: the whole last 2 s) |
+| Width in the image 1 s before impact (median) | 1 pixel |
+| Width 0.5 s before impact (p10–p90) | 1–3 pixels |
+
+![A pole collision](images/p3-failure-pole.png)
+
+This is not the lidar's blind spot from Phase 2 (§11 there): the student sees the pole the whole time. But at
+64 × 48 over 90°, one pixel is 1.4°, and a 3–6 cm pole at 3 m covers 1–2 pixels. A 1-pixel pole is all edge, so the
+noise model's edge dropout (30%) removes it from about a third of frames. It flickers, as the lidar's poles did. In
+the example the drone flies straight at a pole that is centred in the image from −0.9 s.
+
+### 8.3 What would help
+
+- **Climbing:**
+  - *A soft altitude limit in the teacher's reward* (a penalty above about 3 m). This stops the teacher showing it,
+    and therefore the student. The drone would still be stuck at a doorless stretch of wall, but by turning to look
+    rather than climbing.
+  - *Memory (PLAN.md's GRU).* The door is usually visible on the approach, before the drone is at the wall, so
+    remembering it could replace climbing with sliding the right way.
+  - *A wider field of view.*
+- **Poles:**
+  - *More pixels:* 128 × 96 makes a pole at 3 m 2–4 pixels wide, at 4× the rays. The whole env step was 18 ms at 1024 envs
+    (§1), and distillation was 2.1 s per iteration; the camera's share of that hasn't been measured.
+  - *Edge dropout that spares thin objects,* though that's a question of what a real sensor does.
+
+Both are now under 3% each, and G3 is met with margin. So these are improvements for Phase 4/5, not blockers.
+
+## 9. Fixing the climbing: a soft ceiling
+
+§8.1 found the student climbing at walls whose door was out of view, inherited from its teacher. The heading term
+explains why the teacher does it: it scores only *horizontal* velocity. A drone stuck nose-to-wall pays the full
+heading penalty for sliding sideways along the wall (θ = 90°), but nothing for going up. Going up was the free
+direction.
+
+**The term** (commit `a5fe5de`): `env.rewards.altitude` (default 0.0, so earlier runs reproduce) costs
+`w × max(altitude − altitude_soft_ceiling, 0)` per second, with the soft ceiling at 3 m. The highest goals are at
+2.5 m, so normal flight never pays it. At w = 2.0, a drone at 3.5 m pays 1 per second, rising to 2 at the 4 m hard
+ceiling. Sliding sideways along a wall costs the heading term 1 per second at 1 m/s or faster (less when slower),
+so climbing is now no cheaper than sliding. A CPU test
+covers it.
+
+**Runs** (seed 42, otherwise exactly §5–6), both with failure recording in the evaluation:
+- the teacher: `p3-teacher-heading-alt-s42`
+  ([vam5p6dd](https://forge.coreweave.com/wandb/vedssharma1/isaac-rl/runs/vam5p6dd)), `env.rewards.heading=1.0
+  env.rewards.altitude=2.0`, $0.50;
+- the student distilled from it: `p3-distill-heading-alt-s42`
+  ([51ivdi6f](https://forge.coreweave.com/wandb/vedssharma1/isaac-rl/runs/51ivdi6f)), $1.19.
+
+| Held-out level 5 (seed 42) | Heading teacher | **+ soft ceiling** | Heading student | **+ soft ceiling** |
+|---|---:|---:|---:|---:|
+| Success | 89.2% | **92.7%** | 94.4% | **91.5%** |
+| Collisions | 7.05% | 6.75% | 2.7% | 6.35% |
+| … poles | 2.9% | 4.95% | 2.25% | 4.65% |
+| … cylinders / boxes / walls / side walls | 1.8 / 0.95 / 0.5 / 0.9% | 1.0 / 0.35 / 0.45 / 0% | 0.3 / 0.05 / 0.05 / 0.05% | 0.75 / 0.35 / 0.55 / 0.05% |
+| **Too high** | 2.3% | **0%** | 2.85% | **0%** |
+| Time-out / flipped | 0.9 / 0.55% | 0.35 / 0.2% | 0.05 / 0% | **1.65** / 0% |
+| Direction of travel in view | 98.6% | 96.7% | 98.7% | 97.6% |
+| Time to goal / path efficiency | 8.5 s / 0.87 | 8.5 s / 0.89 | 8.4 s / 0.89 | 8.5 s / 0.91 |
+
+1. **Climbing is gone** for both teacher and student (2.3% and 2.85% → 0), and the teacher gets better overall
+   (89.2% → 92.7%). The ceiling term costs it 0.04 per episode on average, so it hardly ever goes above 3 m.
+2. **The student trades climbing for getting stuck and for poles.**
+   - Time-outs rise from 0.05% to 1.65%, as §8.3 expected: with climbing ruled out, a drone at a doorless stretch
+     of wall sometimes doesn't find the door before the 20 s limit.
+   - Pole hits double (2.25% → 4.65%), but this seed's teacher is also worse on poles (2.9% → 4.95%), and pole
+     rates already ranged 2.25–5.9% across §6.1's three students. One seed can't separate the ceiling term from
+     seed-to-seed spread.
+   - Net, the student's 91.5% is inside §6.1's 90.5–95.3% range.
+3. **So the fix does what it was meant to** (no more crashing through the ceiling). Whether it makes the *student*
+   better overall needs seeds 1 and 2 (about $3.50 more at these costs). The underlying limitation, not knowing
+   which way the door is once it's out of view, remains. Memory (the GRU) or a wider view is the real fix for that.
+
+Cost: $1.69 (teacher $0.50, student $1.19).
 
