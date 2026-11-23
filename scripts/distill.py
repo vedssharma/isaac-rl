@@ -8,7 +8,9 @@ probability beta (falling from 1 to 0 over --teacher_decay_iterations, so early 
 learning from), else the student's. Every visited state is labelled with the frozen teacher's action, computed by
 RSL-RL from the env's "teacher" observation, and the student (drone_nav/policies/depth_student.py) is fitted to the
 labels with MSE for --epochs passes over the rollout. The curriculum follows whoever flies, so the student climbs
-the levels as it improves.
+the levels as it improves. With --gru_hidden N the student has a GRU memory: it carries its hidden state through
+the rollout (zeroed when an episode starts) and is trained on whole windows of --num_steps_per_env steps, by
+truncated backpropagation through time from the hidden state each window started with.
 
 Like train.py: W&B logging (entity and project from WANDB_ENTITY / WANDB_PROJECT; the run id from WANDB_RUN_ID when
 the launcher sets it), checkpoints model_<iteration>.pt in logs/distill/<timestamp>_<run_name>/ and on W&B, the final
@@ -44,6 +46,9 @@ parser.add_argument("--teacher_decay_iterations", type=int, default=100, help="b
 parser.add_argument("--teacher_run", type=str, default="wn2l0g9q", help="W&B run id (or entity/project/id)")
 parser.add_argument("--teacher_checkpoint", type=str, default=None, help="file in that run (default: its final)")
 parser.add_argument("--save_interval", type=int, default=100)
+parser.add_argument(
+    "--gru_hidden", type=int, default=0, help="GRU memory size; 0 (default) is the feed-forward student"
+)
 parser.add_argument("--run_name", type=str, default=None)
 parser.add_argument("--logger", type=str, default="wandb", choices=("wandb", "none"))
 parser.add_argument("--hf_upload", choices=("final", "none"), default="final")
@@ -154,7 +159,11 @@ def main(env_cfg, agent_cfg: RslRlBaseRunnerCfg) -> None:
     teacher_runner.load(str(teacher_path))
     teacher = teacher_runner.get_inference_policy(device=device)
 
-    student = ds.DepthStudent(proprio_dim=GOAL_OBS_DIM, image_hw=env.unwrapped.depth_image_shape).to(device)
+    student_kwargs = {"proprio_dim": GOAL_OBS_DIM, "image_hw": env.unwrapped.depth_image_shape}
+    if args_cli.gru_hidden > 0:
+        student = ds.RecurrentDepthStudent(gru_hidden=args_cli.gru_hidden, **student_kwargs).to(device)
+    else:
+        student = ds.DepthStudent(**student_kwargs).to(device)
     optimizer = torch.optim.Adam(student.parameters(), lr=args_cli.learning_rate)
     n_params = sum(p.numel() for p in student.parameters())
     print(f"[INFO] Student: {n_params / 1e6:.2f}M parameters, config {student.config}")
@@ -178,7 +187,7 @@ def main(env_cfg, agent_cfg: RslRlBaseRunnerCfg) -> None:
     }
     distill_cfg = {k: getattr(args_cli, k) for k in (
         "max_iterations", "num_steps_per_env", "epochs", "num_minibatches", "learning_rate", "max_grad_norm",
-        "teacher_decay_iterations", "seed")}  # fmt: skip
+        "teacher_decay_iterations", "seed", "gru_hidden")}  # fmt: skip
     dump_yaml(str(log_dir / "params" / "env.yaml"), env_cfg)
     (log_dir / "params" / "distill.json").write_text(
         json.dumps({"distill": distill_cfg, "student": student.config, "run_meta": run_meta}, indent=2) + "\n"
@@ -211,6 +220,14 @@ def main(env_cfg, agent_cfg: RslRlBaseRunnerCfg) -> None:
     n, T = env.num_envs, args_cli.num_steps_per_env
     obs_buf = torch.zeros(T, n, student.obs_dim, device=device)
     label_buf = torch.zeros(T, n, env.num_actions, device=device)
+    # Recurrent student: its memory across steps and windows, the memory at the start of each window, and which steps
+    # start a new episode (the memory is zeroed there, in the rollout and in forward_sequence alike).
+    recurrent = student.is_recurrent
+    if recurrent:
+        h = student.initial_state(n, device)
+        h0 = torch.zeros_like(h)
+        starts_buf = torch.zeros(T, n, dtype=torch.bool, device=device)
+        next_start = torch.ones(n, dtype=torch.bool, device=device)
 
     start = time.time()
     exit_code, iteration, final_ckpt = 1, 0, None
@@ -222,14 +239,23 @@ def main(env_cfg, agent_cfg: RslRlBaseRunnerCfg) -> None:
             student.eval()
             # no_grad, not inference_mode: the normalizer's buffers are updated here and used in backprop later.
             with torch.no_grad():
+                if recurrent:
+                    h0.copy_(h)
                 for t in range(T):
                     policy_obs = obs["policy"]
                     teacher_actions = teacher(obs)
                     student.update_normalizer(policy_obs)
-                    student_actions = student(policy_obs)
+                    if recurrent:
+                        starts_buf[t] = next_start
+                        h = torch.where(next_start[:, None], torch.zeros_like(h), h)
+                        student_actions, h = student.step(policy_obs, h)
+                    else:
+                        student_actions = student(policy_obs)
                     obs_buf[t] = policy_obs
                     label_buf[t] = teacher_actions
-                    obs, _, _, extras = env.step(ds.mix_actions(teacher_actions, student_actions, beta))
+                    obs, _, dones, extras = env.step(ds.mix_actions(teacher_actions, student_actions, beta))
+                    if recurrent:
+                        next_start = dones.bool()
                     for key, value in (extras.get("log") or {}).items():
                         value = torch.as_tensor(value, device=device).float().reshape(-1)
                         episode_logs.setdefault(key, []).append(value)
@@ -239,8 +265,14 @@ def main(env_cfg, agent_cfg: RslRlBaseRunnerCfg) -> None:
             x, y = obs_buf.reshape(T * n, -1), label_buf.reshape(T * n, -1)
             losses = []
             for _ in range(args_cli.epochs):
-                for idx in ds.minibatches(T * n, args_cli.num_minibatches, device):
-                    loss = ds.imitation_loss(student(x[idx]), y[idx])
+                # Feed-forward: shuffled steps. Recurrent: shuffled envs, each with its whole window in order
+                # (truncated backpropagation through time from the window's starting memory).
+                for idx in ds.minibatches(n if recurrent else T * n, args_cli.num_minibatches, device):
+                    if recurrent:
+                        out = student.forward_sequence(obs_buf[:, idx], h0[idx], starts_buf[:, idx])
+                        loss = ds.imitation_loss(out, label_buf[:, idx])
+                    else:
+                        loss = ds.imitation_loss(student(x[idx]), y[idx])
                     optimizer.zero_grad()
                     loss.backward()
                     torch.nn.utils.clip_grad_norm_(student.parameters(), args_cli.max_grad_norm)
