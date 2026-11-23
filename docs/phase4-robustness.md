@@ -111,8 +111,9 @@ normalization and iteration count, in a new run and log directory.
 
 `p4-teacher-dr-ft-s42` ([tgjesjd2](https://forge.coreweave.com/wandb/vedssharma1/isaac-rl/runs/tgjesjd2), $0.47): the
 nominal soft-ceiling teacher (`vam5p6dd`, docs/phase3-depth-student.md §9) fine-tuned for 1000 more iterations under
-full randomization. The curriculum restarts at level 0, and falls drop from 36% in the very first iteration to about
-1% within 100 iterations. By the end it's back at level 4.9+ and climbing.
+full randomization. The curriculum restarts at level 0. Falls drop from 36% in the very first iteration to under 4%
+within about 120 iterations, and to about 1% by iteration 1800. The mean level is 4.9 by iteration 2000 (of 2500) and
+still climbing.
 
 | Held-out level 5 (0.1 m rule) | Nominal | Full randomization | Relative drop |
 |---|---:|---:|---:|
