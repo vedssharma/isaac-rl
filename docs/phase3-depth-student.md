@@ -18,8 +18,8 @@ Status:
 - [x] A soft ceiling in the teacher's reward (§9): climbing goes to 0. Over 3 seeds (§9.1) the teachers improve
   (93.3% against 91.2%), but the students don't: 92.5% / 6.1% against 93.4% / 4.9%, within noise
 - [ ] Option B: PPO from depth with an asymmetric critic
-- [x] GRU memory (§10): from the soft-ceiling teacher, **94.75% / 5.2%, time-outs 1.65% → 0.05%** against the
-  feed-forward student's 91.5% / 6.35%; poles unchanged. One seed
+- [x] GRU memory (§10–10.1): **94.6% ± 0.4 success, 4.7% ± 0.8 collisions over 3 seeds**, the best and most
+  consistent students. The worst GRU seed (94.15%) is above the mean of either feed-forward set
 - **Exit (G3):** ≥ 85% success at difficulty 5 from depth only.
 
 **The teacher** (docs/phase2-obstacles.md §18): `p2-slow-margin15-nearest4-s42`
@@ -584,4 +584,43 @@ teacher (§9, `51ivdi6f`).
 4. The success CIs of the two students don't overlap, but students varied by about 2 points between seeds (§6.1,
    §9.1). Seeds 1 and 2 from the existing soft-ceiling teachers (`56j6n22n`, `arrqs6y5`) would settle it, at about
    $2.60.
+
+### 10.1 Three seeds: the best and most consistent students
+
+Seeds 1 and 2 of the GRU student, distilled from the existing soft-ceiling teachers of the same seeds (§9.1,
+`56j6n22n` and `arrqs6y5`), exactly like seed 42: `p3-distill-gru-alt-s1`
+([x5bl74jf](https://forge.coreweave.com/wandb/vedssharma1/isaac-rl/runs/x5bl74jf)) and `p3-distill-gru-alt-s2`
+([gik2yxvq](https://forge.coreweave.com/wandb/vedssharma1/isaac-rl/runs/gik2yxvq)), commit `cc67678`.
+
+| Held-out level 5 | GRU: s42 / s1 / s2 | **GRU mean ± SD** | Feed-forward, same teachers (§9.1) | Feed-forward, heading teachers (§6.1) |
+|---|---|---:|---:|---:|
+| **Success** | 94.75 / 94.8 / 94.15 | **94.6 ± 0.4** | 92.5 ± 2.2 | 93.4 ± 2.6 |
+| **Collisions** | 5.2 / 5.15 / 3.85 | **4.7 ± 0.8** | 6.1 ± 1.2 | 4.9 ± 3.9 |
+| … poles | 4.6 / 4.0 / 3.45 | 4.0 | 4.6 | 3.5 |
+| … cylinders, boxes, walls, side walls | 0.6 / 1.15 / 0.4 | 0.7 | 1.5 | 1.4 |
+| Time-out | 0.05 / 0.05 / 1.95 | 0.7 | 1.2 | 0.27 |
+| Too high | 0 / 0 / 0.05 | 0.02 | 0 | 1.4 |
+
+All in % of episodes.
+
+1. **The GRU students are the best and by far the most consistent:** mean success 94.6% with an SD of 0.4 points,
+   against 2.2–2.6 for either feed-forward set. The worst GRU seed (94.15%) is above the mean of both feed-forward
+   sets. Against the feed-forward students from the same teachers, success is +2.0 points and collisions −1.4.
+   With three seeds a side, Welch's t is 1.6 and 1.7, suggestive rather than conclusive, but the consistency is
+   clear.
+2. **Memory fixes stalling at walls on two seeds of three.** Seed 42 went from 1.65% time-outs to 0.05%; seed 1's
+   feed-forward student never stalled. Seed 2 still stalls (1.95%, against 1.8% without memory), and its own
+   teacher stalls too (0.8%), the most of the three. It's consistent with the earlier pattern that a student
+   inherits its teacher's habits, but it isn't proven.
+3. **Poles are what's left:** 4.0% of episodes, 85% of the GRU students' collisions. Memory moved them only
+   slightly (4.6% → 4.0%). They're seen but tiny (§8.2), so the levers are resolution and the noise model, not
+   memory.
+
+**The Phase 3 student is the GRU student** (`RecurrentDepthStudent`, 256 units) distilled from a teacher with the
+heading and soft-ceiling terms: 94.6% ± 0.4 success, 4.7% ± 0.8 collisions on held-out level 5 from depth images
+alone. Seed 1 (`x5bl74jf`, 94.8%) or seed 42 (`uke1cqz8`, 94.75%) are the checkpoints to carry into Phase 4.
+
+Cost: $3.39 (seed 1 on Nebius, 53 min: its price lookup failed in the launcher, so it's computed as 0.88 h × $2.18
+= $1.93; seed 2 $1.46). The first attempt at launching these two never started: a zsh loop passed `"1 56j6n22n"` as
+one argument, the launcher's run-name check rejected it, and nothing was created.
 
