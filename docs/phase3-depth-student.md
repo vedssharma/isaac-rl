@@ -15,8 +15,8 @@ Status:
 - [x] Distilled from it (§6): 94.4% success, 2.7% collisions on held-out level 5 from depth alone (seed 42)
 - [x] **Three seeds (§6.1): 93.4% ± 2.6 success, 4.9% ± 3.9 collisions; every seed ≥ 90.5%. G3 is met.**
 - [x] Its failures (§8): climbing happens at walls whose door is out of view; poles are seen but are 1–2 pixels wide
-- [x] A soft ceiling in the teacher's reward (§9): climbing goes to 0 for teacher and student; one seed, the student's
-  net result (91.5% / 6.35%) is inside the old seed spread, so seeds 1 and 2 would be needed to call it better or worse
+- [x] A soft ceiling in the teacher's reward (§9): climbing goes to 0. Over 3 seeds (§9.1) the teachers improve
+  (93.3% against 91.2%), but the students don't: 92.5% / 6.1% against 93.4% / 4.9%, within noise
 - [ ] Option B: PPO from depth with an asymmetric critic
 - [ ] GRU memory
 - **Exit (G3):** ≥ 85% success at difficulty 5 from depth only.
@@ -485,4 +485,46 @@ covers it.
    which way the door is once it's out of view, remains. Memory (the GRU) or a wider view is the real fix for that.
 
 Cost: $1.69 (teacher $0.50, student $1.19).
+
+### 9.1 Three seeds: better teachers, the same students
+
+Seeds 1 and 2 of the soft-ceiling setup, run exactly like seed 42: teachers
+([56j6n22n](https://forge.coreweave.com/wandb/vedssharma1/isaac-rl/runs/56j6n22n) s1,
+[arrqs6y5](https://forge.coreweave.com/wandb/vedssharma1/isaac-rl/runs/arrqs6y5) s2), then a student from each
+([xfh9rqsi](https://forge.coreweave.com/wandb/vedssharma1/isaac-rl/runs/xfh9rqsi) s1,
+[d5f3wha0](https://forge.coreweave.com/wandb/vedssharma1/isaac-rl/runs/d5f3wha0) s2). Commit `c0c7cbd`. Same 60
+held-out level-5 layouts, 2000 episodes each, 0.1 m rule. Against §6.1's heading-only runs:
+
+| Held-out level 5, mean ± SD over 3 seeds | Heading teachers | **+ soft ceiling** | Heading students | **+ soft ceiling** |
+|---|---:|---:|---:|---:|
+| **Success** | 91.2 ± 1.8 | **93.3 ± 0.8** | 93.4 ± 2.6 | **92.5 ± 2.2** |
+| **Collisions** | 6.7 ± 0.9 | 6.1 ± 0.6 | 4.9 ± 3.9 | 6.1 ± 1.2 |
+| … poles | 3.5 | 4.1 | 3.5 | 4.6 |
+| **Too high** | 1.3 | **0.03** | 1.4 | **0** |
+| Time-out | 0.45 | 0.4 | 0.27 | 1.2 |
+| Per seed: success s42 / s1 / s2 | 89.2 / 92.6 / 91.75 | 92.7 / 94.2 / 93.0 | 94.4 / 90.5 / 95.3 | 91.5 / 95.1 / 91.0 |
+| Per seed: collisions s42 / s1 / s2 | 7.05 / 7.35 / 5.65 | 6.75 / 5.5 / 6.04 | 2.7 / 9.4 / 2.65 | 6.35 / 4.85 / 7.2 |
+
+All in % of episodes. Every soft-ceiling run faces forward 96.7–97.9% of the time.
+
+1. **The soft ceiling makes better teachers:** +2.1 points of success, every seed above every heading-only seed but
+   one (92.6), and a third of the spread. Climbing is gone (0.03%), and collisions dip slightly.
+2. **It doesn't make better students.** The mean success is 0.9 points lower and collisions 1.2 points higher, both
+   well inside the seed spread. Climbing is gone here too, but it turns into the two things §8.3 expected:
+   - more time-outs (1.2% against 0.27%): drones stuck at a doorless wall until the 20 s limit;
+   - a few more pole hits (4.6% against 3.5%; the teachers moved the same way, 3.5 → 4.1%).
+3. **Why the two differ:** a teacher sees 360°, so once climbing is ruled out it slides the right way to the door. A
+   student at the same wall can't see which way the door is, so it imitates the slide as best it can, and sometimes
+   that's the wrong way or not at all. The soft ceiling removes the symptom (flying into the ceiling); the cause is
+   the student's missing information.
+4. **G3 holds either way:** the worst student in both sets is above 90%.
+
+**Decision:** leave `env.rewards.altitude` off by default and don't adopt it for the Phase 3 student. It's neutral
+for the student, and crashing into the ceiling is a clear, attributable failure, while stalling at a wall is not.
+It's the better teacher setting if a teacher is ever needed on its own. The real fix for doorless walls is memory
+(PLAN.md's GRU: the door is usually visible on the approach) or a wider field of view.
+
+**Infrastructure:** both student boxes took about 13 minutes to delete, which is most of why seed 1's run shows 78
+minutes ($2.26). Seed 2's price lookup failed during the launcher's accounting, so its cost is computed by hand: 1.08
+h × $1.74 = $1.88. Cost of the two seeds: teachers $0.50 + $0.46, students $2.26 + $1.88, $5.10 in all.
 
