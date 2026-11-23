@@ -40,6 +40,7 @@ from isaaclab.app import AppLauncher
 # local imports
 import cli_args  # isort: skip
 import kit_exit  # isort: skip
+import wandb_summary  # isort: skip
 
 ORIG_ARGV = list(sys.argv)
 
@@ -59,6 +60,13 @@ parser.add_argument(
     "--distributed", action="store_true", default=False, help="Run training with multiple GPUs or nodes."
 )
 parser.add_argument("--export_io_descriptors", action="store_true", default=False, help="Export IO descriptors.")
+parser.add_argument(
+    "--init_wandb_run",
+    type=str,
+    default=None,
+    help="start from this W&B run's final checkpoint (weights, optimizer and iteration count), e.g. to fine-tune a "
+    "trained policy under domain randomization; a new run and log directory either way",
+)
 parser.add_argument(
     "--hf_upload",
     choices=("final", "none"),
@@ -187,6 +195,20 @@ def collect_run_meta(env_cfg, agent_cfg: RslRlBaseRunnerCfg) -> dict:
         "hostname": platform.node(),
         "command": " ".join(ORIG_ARGV),
     }
+
+
+def fetch_init_checkpoint(run_ref: str, dest: Path) -> Path:
+    """Download a W&B run's final checkpoint (its summary's final_checkpoint, or the uploaded summary file's)."""
+    import wandb
+
+    if run_ref.count("/") != 2:
+        run_ref = f"{os.environ['WANDB_ENTITY']}/{os.environ['WANDB_PROJECT']}/{run_ref}"
+    run = wandb.Api(timeout=60).run(run_ref)
+    name = wandb_summary.summary_value(run, "final_checkpoint")
+    if not name:
+        raise SystemExit(f"W&B run {run_ref} has no final_checkpoint to start from")
+    run.file(name).download(root=str(dest), replace=True)
+    return dest / name
 
 
 def upload_to_hf(log_dir: str, final_ckpt: str, experiment_name: str) -> str | None:
@@ -361,6 +383,10 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     # isaaclab_tasks loads from the copy bundled in the isaaclab wheel, not from the git checkout.
     runner.add_git_repo_to_log(__file__)
     # load the checkpoint
+    if args_cli.init_wandb_run:
+        init_path = fetch_init_checkpoint(args_cli.init_wandb_run, Path(log_dir) / "init")
+        print(f"[INFO]: Starting from {init_path}")
+        runner.load(str(init_path))
     if agent_cfg.resume or agent_cfg.algorithm.class_name == "Distillation":
         print(f"[INFO]: Loading model checkpoint from: {resume_path}")
         # load previously trained model
