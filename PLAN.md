@@ -248,7 +248,7 @@ Each phase ends with a **demo video + W&B report**. Don't move on until the exit
 - [x] **Option A — Teacher→student distillation (DAgger):** roll out the student, label actions with the frozen
       teacher, and train with supervised loss. This is usually fastest and most stable.
 - [ ] **Option B — End-to-end PPO from depth** with an asymmetric critic. Compare against A; it's a good write-up result.
-- [ ] Add a GRU memory; test on maps with obstacles behind corners / outside the FOV
+- [x] Add a GRU memory (docs/phase3-depth-student.md §10: it fixes stalling at walls whose door is out of view; one seed)
 - **Exit (G3):** ≥ 85% success at difficulty 5 from depth only. **Met 2026-11-20: 93.4% ± 2.6 over 3 seeds (worst
   90.5%), distilled from teachers that face where they fly (docs/phase3-depth-student.md §6.1).**
 
