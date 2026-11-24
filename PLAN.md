@@ -259,8 +259,8 @@ Each phase ends with a **demo video + W&B report**. Don't move on until the exit
       under it; 5.5% drop under full randomization (93.15% → 88.06%), one seed
 - [ ] Out-of-distribution evaluation: higher density, new primitive types, more noise
 - [ ] Optional: moving obstacles (spawn option B)
-- **Exit:** < 10% drop in success under full randomization compared with nominal. **5.5% on one seed (2026-11-23);
-  seeds 1 and 2 pending.**
+- **Exit:** < 10% drop in success under full randomization compared with nominal. **Met on average, narrowly: 9.7% mean
+  drop over 3 seeds (5.5 / 16.1 / 7.7%); wind is the weak point (docs/phase4-robustness.md §5.1).**
 
 ### Phase 5 — Evaluation and write-up (weeks 11–12)
 - [ ] Final benchmark table across policies × difficulty levels × seeds (mean ± 95% CI)

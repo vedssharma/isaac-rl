@@ -10,8 +10,9 @@ Status:
 - [x] The Phase 3 student measured under each factor and all together (§2): **65.1% under full randomization against
   94.75% nominal, a 31% drop.** Mass and wind cause most of it
 - [x] Train under randomization (§3–5): training the teacher from scratch under full randomization failed (§3);
-  fine-tuning the nominal teacher under it worked (§4). **Its GRU student drops 5.5% under full randomization
-  (93.15% → 88.06%): the exit test is met, on one seed** (§5)
+  fine-tuning the nominal teacher under it worked (§4). Its GRU student drops 5.5% under full randomization on seed 42
+  (§5). **Over 3 seeds (§5.1) the mean drop is 9.7%, just inside the 10% target, but seed 1 drops 16.1%:** wind is
+  the weak point
 - [ ] Camera pitch randomization; out-of-distribution maps (higher density, new obstacle kinds)
 
 **The policy under test** is the Phase 3 result (docs/phase3-depth-student.md §10.1): the GRU depth student, seed 42
@@ -162,4 +163,58 @@ Cost of §3–5: $0.56 + $0.36 (the stopped student) + $0.47 + $1.26 + $0.98 = $
 1. Seeds 1 and 2 of §4–5: fine-tune the seed-1 and seed-2 soft-ceiling teachers (`56j6n22n`, `arrqs6y5`), distil,
    and run the table. About $2.70 per seed.
 2. Then the rest of Phase 4: camera pitch randomization and out-of-distribution maps.
+
+### 5.1 Three seeds: met on average, not on every seed
+
+Seeds 1 and 2 of §4–5, run end to end by a small pipeline script (fine-tune the teacher, distil the student, run the
+table, each starting when the previous step verified). Their teachers were fine-tuned from the seed-1 and seed-2
+soft-ceiling teachers (`56j6n22n`, `arrqs6y5`):
+
+| Run | Seed 1 | Seed 2 |
+|---|---|---|
+| Fine-tuned teacher | [dsevgp9o](https://forge.coreweave.com/wandb/vedssharma1/isaac-rl/runs/dsevgp9o) | [6nbcsoii](https://forge.coreweave.com/wandb/vedssharma1/isaac-rl/runs/6nbcsoii) |
+| GRU student | [bmylysop](https://forge.coreweave.com/wandb/vedssharma1/isaac-rl/runs/bmylysop) | [jegy71of](https://forge.coreweave.com/wandb/vedssharma1/isaac-rl/runs/jegy71of) |
+
+**Teachers** (held-out level 5, 0.1 m rule):
+
+| Teacher | Nominal | Full randomization | Relative drop |
+|---|---:|---:|---:|
+| s42 (§4) | 93.3% | 81.35% | 12.8% |
+| s1 | 93.8% | 71.95% | 23.3% |
+| s2 | 90.0% | 78.0% | 13.3% |
+
+**Students:**
+
+| Condition | s42 | s1 | s2 | **Mean ± SD** | Mean relative drop (per seed) |
+|---|---:|---:|---:|---:|---|
+| Nominal | 93.15 | 93.7 | 91.25 | **92.7 ± 1.3** | |
+| Mass and inertia ±20% | 92.95 | 92.15 | 91.2 | 92.1 | 0.6% (0.2 / 1.7 / 0.1) |
+| Thrust ±15% | 93.6 | 92.2 | 91.5 | 92.4 | 0.3% |
+| Motor lag ≤ 50 ms | 92.5 | 92.3 | 91.3 | 92.0 | 0.7% |
+| Drag ±30% | 92.65 | 93.5 | 91.25 | 92.5 | 0.3% |
+| Latency 0–40 ms | 92.15 | 91.65 | 89.65 | 91.2 | 1.7% |
+| **Wind ≤ 2 m/s + gusts** | 90.85 | **83.1** | 88.05 | 87.3 ± 3.9 | **5.8%** (2.5 / **11.3** / 3.5) |
+| Observation noise | 92.9 | 92.75 | 91.45 | 92.4 | 0.4% |
+| Depth noise × 2 | 95.2 | 94.15 | 93.95 | 94.4 | −1.9% |
+| **Full** | 88.06 | **78.6** | 84.3 | **83.6 ± 4.8** | **9.7%** (5.5 / **16.1** / 7.7) |
+
+All in % of episodes. Under full randomization: collisions 10.8 / 18.2 / 11.1%, too high 0.05 / 1.5 / 1.25%, flipped
+0.5 / 0.35 / 1.65%.
+
+1. **The exit test is met on average, narrowly:** a 9.7% mean relative drop against the < 10% target (83.6% fully
+   randomized against 92.7% nominal). It's met on two seeds of three (5.5%, 7.7%); **seed 1 fails at 16.1%**.
+2. **Every factor except wind is solved on every seed:** mass, thrust, motor lag, drag, latency and both noises cost
+   under 2% each.
+3. **Wind is what's left,** and it's seed-dependent: 2.5%, 11.3% and 3.5%. The seed-1 student collides with obstacles
+   in 18% of fully randomized episodes. Its fine-tuned teacher was also the weakest under randomization (23% drop),
+   so, as in Phase 3, the student inherits its teacher's weakness.
+4. **The robustness costs about 2 points at nominal:** 92.7% ± 1.3 against Phase 3's 94.6% ± 0.4.
+
+**Verdict:** Phase 4's exit is met on average but isn't robust across seeds. The remaining work is wind. The
+cheapest things to try:
+- **Train with stronger wind than the test** (e.g. up to 3 m/s), so 2 m/s sits inside the training range rather than
+  at its edge.
+- **Fine-tune the teachers longer.** 1000 iterations left the seed-42 curriculum still climbing (§4).
+
+Cost of seeds 1 and 2: teachers $0.76 + $0.45, students $1.98 + $1.96, tables $0.80 + $0.77, $6.72 in all.
 
