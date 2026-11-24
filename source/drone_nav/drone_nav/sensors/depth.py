@@ -80,3 +80,12 @@ def add_depth_noise(
 def depth_observation(depth: torch.Tensor, max_range: float) -> torch.Tensor:
     """(n, H * W) depth clipped to [0, max_range] and scaled to [0, 1] (1 = nothing within range), row-major."""
     return (depth.clamp(0.0, max_range) / max_range).flatten(1)
+
+
+def pitch_quat(pitch: torch.Tensor) -> torch.Tensor:
+    """(n, 4) quaternions (w, x, y, z) rotating about the camera's y axis (left) by `pitch` radians: positive tilts
+    the view down (x towards -z), in Isaac Lab's "world" camera convention (x forward, z up)."""
+    half = pitch / 2
+    zeros = torch.zeros_like(half)
+    return torch.stack([torch.cos(half), zeros, torch.sin(half), zeros], dim=-1)
+

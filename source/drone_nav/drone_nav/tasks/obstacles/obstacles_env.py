@@ -128,6 +128,13 @@ class DroneNavObstaclesEnvCfg(DroneNavGoalCTBREnvCfg):
 
     # Spawn and goal points stay this far inside the start and goal strips (from their edges and the side walls).
     strip_margin = 0.5
+    # Out-of-distribution maps (Phase 4, obstacle_field.ood_overrides), applied to the generator before the terrain is
+    # built: obstacle density x this, an obstacle mix ("poles": poles only; "walls": wall-heavy), and obstacle sizes
+    # outside every training range (bigger cylinders and boxes, thinner poles).
+    terrain_density_scale: float = 1.0
+    terrain_mix: str = ""
+    terrain_unseen_sizes: bool = False
+
     # Evaluation: put every env on this difficulty row (0-9) instead of random ones. -1 (off) for training; an int
     # rather than None so that Hydra can override it (see max_init_terrain_level).
     eval_terrain_level: int = -1
@@ -185,6 +192,11 @@ class DroneNavObstaclesEnv(DroneNavGoalEnv):
 
         # The terrain generator gives every tile its own size, so the strips come from the generator's.
         generator = cfg.terrain.terrain_generator
+        sub = generator.sub_terrains["obstacles"]
+        for name, value in of.ood_overrides(
+            ObstacleFieldParams.from_cfg(sub), cfg.terrain_density_scale, cfg.terrain_mix, cfg.terrain_unseen_sizes
+        ).items():
+            setattr(sub, name, value)
         tile = ObstacleFieldParams.from_cfg(generator.sub_terrains["obstacles"])
         tile.size = tuple(generator.size)
         self._spawn_box, self._goal_box = spawn_and_goal_regions(tile, margin=cfg.strip_margin)
