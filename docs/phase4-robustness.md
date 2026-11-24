@@ -13,6 +13,9 @@ Status:
   fine-tuning the nominal teacher under it worked (§4). Its GRU student drops 5.5% under full randomization on seed 42
   (§5). **Over 3 seeds (§5.1) the mean drop is 9.7%, just inside the 10% target, but seed 1 drops 16.1%:** wind is
   the weak point
+- [x] Stronger training wind and longer teacher fine-tuning (§6): the students cope with wind consistently, and
+  fully randomized success is steadier (84.9% ± 1.3), but nominal success falls to 88.3% ± 6.2. Not adopted: §5.1's
+  setup stays the Phase 4 result
 - [ ] Camera pitch randomization; out-of-distribution maps (higher density, new obstacle kinds)
 
 **The policy under test** is the Phase 3 result (docs/phase3-depth-student.md §10.1): the GRU depth student, seed 42
@@ -217,4 +220,64 @@ cheapest things to try:
 - **Fine-tune the teachers longer.** 1000 iterations left the seed-42 curriculum still climbing (§4).
 
 Cost of seeds 1 and 2: teachers $0.76 + $0.45, students $1.98 + $1.96, tables $0.80 + $0.77, $6.72 in all.
+
+## 6. Fixing wind: stronger training wind, longer fine-tuning
+
+§5.1 left wind as the weak point, varying by seed. Two changes, on all three seeds at once:
+- **Train with stronger wind than the test:** wind up to 3 m/s with 0.75 m/s gusts, for teacher and student. The
+  tests stay at 2 m/s + 0.5 m/s, now inside the training range rather than at its edge.
+- **Fine-tune the teachers longer:** 2000 iterations instead of 1000. §4's seed-42 teacher was still climbing the
+  curriculum at 1000.
+
+Everything else is as in §4–5. Same pipeline script, run names tagged `-w3`.
+
+| Run | Seed 42 | Seed 1 | Seed 2 |
+|---|---|---|---|
+| Fine-tuned teacher | [relovls4](https://forge.coreweave.com/wandb/vedssharma1/isaac-rl/runs/relovls4) | [nlsrwcf1](https://forge.coreweave.com/wandb/vedssharma1/isaac-rl/runs/nlsrwcf1) | [g9ope2wo](https://forge.coreweave.com/wandb/vedssharma1/isaac-rl/runs/g9ope2wo) |
+| GRU student | [0fbiefxc](https://forge.coreweave.com/wandb/vedssharma1/isaac-rl/runs/0fbiefxc) | [hzxsqsor](https://forge.coreweave.com/wandb/vedssharma1/isaac-rl/runs/hzxsqsor) | [9l44nfl0](https://forge.coreweave.com/wandb/vedssharma1/isaac-rl/runs/9l44nfl0) |
+
+**Teachers** (held-out level 5; the "full" evaluation uses the 2 m/s test wind):
+
+| Teacher | Nominal | Full | Relative drop | §5.1's teacher (nominal / full / drop) |
+|---|---:|---:|---:|---|
+| s42 | 92.3% | 82.7% | 10.4% | 93.3 / 81.35 / 12.8% |
+| s1 | 92.8% | 74.2% | 20.1% | 93.8 / 71.95 / 23.3% |
+| s2 | **85.9%** | 78.35% | 8.8% | 90.0 / 78.0 / 13.3% |
+
+**Students:**
+
+| Held-out level 5 | §5.1 (2 m/s, 1000 it.): s42 / s1 / s2 | Mean ± SD | **Stronger wind: s42 / s1 / s2** | **Mean ± SD** |
+|---|---|---:|---|---:|
+| **Nominal** | 93.15 / 93.7 / 91.25 | **92.7 ± 1.3** | 89.55 / 93.8 / **81.7** | **88.3 ± 6.2** |
+| Mass, thrust, motor lag, drag, latency, obs noise | | 91.2–92.5 | | 87.4–88.6 |
+| Wind 2 m/s + gusts | 90.85 / 83.1 / 88.05 | 87.3 ± 3.9 | 87.0 / 88.9 / 87.9 | **88.0 ± 0.95** |
+| **Full** | 88.06 / 78.6 / 84.3 | 83.6 ± 4.8 | 85.9 / 83.4 / 85.3 | **84.9 ± 1.3** |
+| Mean relative drop (per seed) | | 9.7% (5.5 / 16.1 / 7.7) | | 3.6% (4.1 / 11.1 / −4.5) |
+
+All in % of episodes. Seed 2 at nominal: 10.2% time-outs, 8.1% collisions. Seed 42 at nominal: 10.3% collisions.
+
+1. **Wind is evened out.** Under 2 m/s wind every seed is now at 87–89% (SD 0.95, against 3.9), and the weak seed 1
+   improves under full randomization (78.6% → 83.4%). Fully randomized success is slightly higher and much steadier:
+   84.9% ± 1.3 against 83.6% ± 4.8.
+2. **But nominal success falls:** 92.7% → 88.3%, with seed 2 at 81.7%. Its teacher had already lost 4 points at
+   nominal (90.0% → 85.9%), and the student inherited it, with 10% of calm episodes timing out. Seed 42's student
+   collides more at nominal (10.3% against 6.65%).
+3. **That makes the relative drop misleading here.** A 3.6% mean drop looks like a big improvement on 9.7%, but much
+   of it comes from a worse nominal, not a better randomized result. Seed 2 even does better fully randomized than
+   nominal. Seed 1, whose nominal held up, still fails the test (11.1%).
+4. **Averaged over nominal and fully randomized,** the §5.1 setup is better (88.2% against 86.6%).
+
+**Decision:** keep §5.1's setup (2 m/s training wind, 1000 fine-tuning iterations) as the Phase 4 result:
+- 92.7% nominal, 83.6% fully randomized, 9.7% mean drop;
+- the exit test met on average, on two seeds of three.
+
+The stronger-wind variant shows the trade-off rather than fixing it. Ideas not yet tried:
+- keep calm conditions in training (e.g. half the episodes windless), so the policy doesn't lose its calm-air
+  behaviour;
+- give the teacher the wind as a privileged observation, so its labels compensate for wind precisely and the GRU
+  student only has to infer it.
+
+Cost: $12.86 (teachers $1.13 + $1.23 + $1.81, students $1.46 + $1.90 + $1.29, tables $1.37 + $1.02 + $1.65). Two
+runs' prices are computed by hand, because the launcher's price lookup failed. The tables took 35–57 minutes of box
+time against about 22 in §5.1, mostly the launcher's follow stalls adding idle time.
 
