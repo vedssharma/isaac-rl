@@ -337,7 +337,8 @@ agrees with exact geometry on **99.97%** of pixels, as the level check did (Phas
    (8.5%). That's the old door-finding problem (Phase 3 §8): with more walls, the GRU's memory of where the door was
    isn't always enough.
 6. **Level 9 is out of reach:** 57%. Its 0.6 m gaps and 12 obstacles per 100 m² were in training, but the students
-   ended training with only 70–90% of envs reaching level 9, at 55–90% success there (§5).
+   never mastered it. They ended training with 22–31% of envs on level 9, at 54–58% success on their current
+   levels.
 
 **Phase 4 verdict:**
 - **The exit test is met narrowly without camera pitch** (9.7% mean drop) **and missed narrowly with it** (10.7%).
