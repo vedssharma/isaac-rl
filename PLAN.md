@@ -257,10 +257,10 @@ Each phase ends with a **demo video + W&B report**. Don't move on until the exit
 - [x] Domain randomization (§5.5), wind, latency, motor lag: in the env, off by default (docs/phase4-robustness.md §1)
 - [x] Train under randomization (docs/phase4-robustness.md §3–5): fine-tune the teacher under it, distil the GRU student
       under it; 5.5% drop under full randomization (93.15% → 88.06%), one seed
-- [ ] Out-of-distribution evaluation: higher density, new primitive types, more noise
+- [x] Out-of-distribution evaluation: higher density, new primitive types, more noise; camera pitch (docs/phase4-robustness.md §7)
 - [ ] Optional: moving obstacles (spawn option B)
-- **Exit:** < 10% drop in success under full randomization compared with nominal. **Met on average, narrowly: 9.7% mean
-  drop over 3 seeds (5.5 / 16.1 / 7.7%); wind is the weak point (docs/phase4-robustness.md §5.1).**
+- **Exit:** < 10% drop in success under full randomization compared with nominal. **At the line: 9.7% mean drop over 3
+  seeds without camera pitch, 10.7% with it; seed 1 fails through wind both times (docs/phase4-robustness.md §5.1, §7).**
 
 ### Phase 5 — Evaluation and write-up (weeks 11–12)
 - [ ] Final benchmark table across policies × difficulty levels × seeds (mean ± 95% CI)
