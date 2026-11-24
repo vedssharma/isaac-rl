@@ -9,7 +9,13 @@ Status:
 - [x] Domain randomization in the env, all off by default (§1)
 - [x] The Phase 3 student measured under each factor and all together (§2): **65.1% under full randomization against
   94.75% nominal, a 31% drop.** Mass and wind cause most of it
-- [ ] Train under randomization
+- [x] Train under randomization (§3–5): training the teacher from scratch under full randomization failed (§3);
+  fine-tuning the nominal teacher under it worked (§4). Its GRU student drops 5.5% under full randomization on seed 42
+  (§5). **Over 3 seeds (§5.1) the mean drop is 9.7%, just inside the 10% target, but seed 1 drops 16.1%:** wind is
+  the weak point
+- [x] Stronger training wind and longer teacher fine-tuning (§6): the students cope with wind consistently, and
+  fully randomized success is steadier (84.9% ± 1.3), but nominal success falls to 88.3% ± 6.2. Not adopted: §5.1's
+  setup stays the Phase 4 result
 - [ ] Camera pitch randomization; out-of-distribution maps (higher density, new obstacle kinds)
 
 **The policy under test** is the Phase 3 result (docs/phase3-depth-student.md §10.1): the GRU depth student, seed 42
@@ -75,3 +81,203 @@ PLAN.md §5.5's levels. Each factor alone, then all of them together:
   how the drone responds, which a feed-forward policy can't.
 
 Then re-run this table. Mass and wind are the ones to watch.
+
+## 3. Training the teacher under randomization from scratch: it doesn't learn
+
+`p4-teacher-dr-s42` ([02o13kdu](https://forge.coreweave.com/wandb/vedssharma1/isaac-rl/runs/02o13kdu), commit
+`179cc45`, $0.56). The Phase 3 teacher's settings: heading and soft-ceiling terms, 4 nearest obstacles, 0.15 m
+training margin, mild slowdown. Plus every randomization at §2's full levels, trained from scratch for 1500
+iterations.
+
+| Iteration | Success | Too low | Flipped | Mean curriculum level |
+|---:|---:|---:|---:|---:|
+| 84 | 92% | 0% | 4.6% | 0 |
+| 443 | 61% | 17% | 7.6% | 2.7 |
+| 1438 | 48% | 23% | 6.3% | 3.1 |
+
+The same teacher without randomization (`vam5p6dd`) reached level 8.6 and never fell. This one stalls at about level 3
+from iteration 400 on, with a quarter of its episodes ending on the ground. Held out at level 5 it reaches 19.8%
+nominal and 19.5% fully randomized, with 46% too low. Learning to fly, to avoid obstacles, and to cope with every
+mismatch at full strength, all from scratch, is more than PPO manages in this budget. It never gets good enough to
+climb the curriculum. A student distillation from it was started and stopped after 85 iterations ($0.36).
+
+Stopping it showed two launcher gaps:
+- A launcher started in the background from a non-interactive shell ignores SIGINT, so Ctrl-C-style cleanup didn't
+  run. Stopping the remote job by hand made the launcher finish normally.
+- The launcher's own interrupt only signalled `train.py` and `play.py`, not `distill.py`. That's fixed (`4404f4b`).
+
+The run had exited 0 without a verified checkpoint, so the launcher kept its box, as designed; I deleted it.
+
+## 4. Fine-tuning the nominal teacher under randomization: it works
+
+`train.py --init_wandb_run <run>` (`4404f4b`) starts from another run's final checkpoint: weights, optimizer, empirical
+normalization and iteration count, in a new run and log directory.
+
+`p4-teacher-dr-ft-s42` ([tgjesjd2](https://forge.coreweave.com/wandb/vedssharma1/isaac-rl/runs/tgjesjd2), $0.47): the
+nominal soft-ceiling teacher (`vam5p6dd`, docs/phase3-depth-student.md §9) fine-tuned for 1000 more iterations under
+full randomization. The curriculum restarts at level 0. Falls drop from 36% in the very first iteration to under 4%
+within about 120 iterations, and to about 1% by iteration 1800. The mean level is 4.9 by iteration 2000 (of 2500) and
+still climbing.
+
+| Held-out level 5 (0.1 m rule) | Nominal | Full randomization | Relative drop |
+|---|---:|---:|---:|
+| Fine-tuned teacher | **93.3%** | **81.35%** | 12.8% |
+| Starting point, `vam5p6dd` (§9 of Phase 3) | 92.7% | | |
+
+Fine-tuning costs it nothing at nominal (93.3% against 92.7%). Under full randomization it keeps 81%: collisions
+15.3%, flipped 2.15%, too low 0.95%. The teacher, with its lidar and no memory, doesn't quite meet the exit test, but
+it's a teacher that can fly in these conditions.
+
+## 5. The GRU student under randomization: the exit test is met (one seed)
+
+`p4-distill-gru-dr-s42` ([0g9bvtcl](https://forge.coreweave.com/wandb/vedssharma1/isaac-rl/runs/0g9bvtcl), $1.26):
+the Phase 3 GRU recipe (256 units, 48-step windows, 500 iterations, β decaying over 50) distilled from the fine-tuned
+teacher. Training ran under full randomization plus `env.depth_noise_scale=2.0`, so the teacher labels states under
+the dynamics actually in play, and the student's memory can infer the weight and the wind. Then the same ten
+conditions as §2 (`p4-robust-gru-dr-s42`, $0.98):
+
+| Condition | Phase 3 student (§2) | **Randomization-trained student** | Drop from nominal | Collisions | Other failures |
+|---|---:|---:|---:|---:|---|
+| Nominal | 94.75% | **93.15%** | | 6.65% | flipped 0.2% |
+| Mass and inertia ±20% | 87.0% | **92.95%** | 0.2% | 7.0% | |
+| Thrust ±15% | 94.65% | 93.6% | −0.5% | 6.2% | |
+| Motor lag ≤ 50 ms | 94.25% | 92.5% | 0.7% | 7.3% | |
+| Drag ±30% | 95.1% | 92.65% | 0.5% | 6.95% | |
+| Latency 0–40 ms | 93.9% | 92.15% | 1.1% | 7.7% | |
+| Wind ≤ 2 m/s + gusts | 83.5% | **90.85%** | 2.5% | 9.0% | |
+| Observation noise | 95.5% | 92.9% | 0.3% | 7.0% | |
+| Depth noise × 2 | 94.0% | 95.2% | −2.2% | 4.7% | |
+| **Full** | **65.1%** (31.3% drop) | **88.06%** | **5.5%** | 10.8% | too low 0.35%, flipped 0.5%, time-out 0.25% |
+
+1. **The exit test is met on this seed:** 88.06% under full randomization against 93.15% nominal, a 5.5% relative
+   drop (the target is < 10%). The Phase 3 student lost 31.3% under the same conditions.
+2. **Mass and wind, the two big losses, are mostly gone:** mass 8.2% → 0.2%, wind 11.9% → 2.5%. Climbing out the
+   top under mass (6.6%) is now 0. What's left under full randomization is mostly collisions (10.8%, about 6.5 points
+   from obstacles other than poles), i.e. wind pushing the drone into things.
+3. **The cost is 1.6 points at nominal** (93.15% against 94.75%), mostly more pole hits (5.15% against 4.6%).
+4. **Depth noise × 2 scores higher than nominal** (95.2%). The student was trained at that noise level, so the
+   nominal evaluation (× 1) is the slightly unfamiliar one. Training at a randomized noise level would remove the
+   asymmetry.
+5. One seed. PLAN.md §7 asks for three before a claim.
+
+Cost of §3–5: $0.56 + $0.36 (the stopped student) + $0.47 + $1.26 + $0.98 = $3.63.
+
+**Next:**
+1. Seeds 1 and 2 of §4–5: fine-tune the seed-1 and seed-2 soft-ceiling teachers (`56j6n22n`, `arrqs6y5`), distil,
+   and run the table. About $2.70 per seed.
+2. Then the rest of Phase 4: camera pitch randomization and out-of-distribution maps.
+
+### 5.1 Three seeds: met on average, not on every seed
+
+Seeds 1 and 2 of §4–5, run end to end by a small pipeline script (fine-tune the teacher, distil the student, run the
+table, each starting when the previous step verified). Their teachers were fine-tuned from the seed-1 and seed-2
+soft-ceiling teachers (`56j6n22n`, `arrqs6y5`):
+
+| Run | Seed 1 | Seed 2 |
+|---|---|---|
+| Fine-tuned teacher | [dsevgp9o](https://forge.coreweave.com/wandb/vedssharma1/isaac-rl/runs/dsevgp9o) | [6nbcsoii](https://forge.coreweave.com/wandb/vedssharma1/isaac-rl/runs/6nbcsoii) |
+| GRU student | [bmylysop](https://forge.coreweave.com/wandb/vedssharma1/isaac-rl/runs/bmylysop) | [jegy71of](https://forge.coreweave.com/wandb/vedssharma1/isaac-rl/runs/jegy71of) |
+
+**Teachers** (held-out level 5, 0.1 m rule):
+
+| Teacher | Nominal | Full randomization | Relative drop |
+|---|---:|---:|---:|
+| s42 (§4) | 93.3% | 81.35% | 12.8% |
+| s1 | 93.8% | 71.95% | 23.3% |
+| s2 | 90.0% | 78.0% | 13.3% |
+
+**Students:**
+
+| Condition | s42 | s1 | s2 | **Mean ± SD** | Mean relative drop (per seed) |
+|---|---:|---:|---:|---:|---|
+| Nominal | 93.15 | 93.7 | 91.25 | **92.7 ± 1.3** | |
+| Mass and inertia ±20% | 92.95 | 92.15 | 91.2 | 92.1 | 0.6% (0.2 / 1.7 / 0.1) |
+| Thrust ±15% | 93.6 | 92.2 | 91.5 | 92.4 | 0.3% |
+| Motor lag ≤ 50 ms | 92.5 | 92.3 | 91.3 | 92.0 | 0.7% |
+| Drag ±30% | 92.65 | 93.5 | 91.25 | 92.5 | 0.3% |
+| Latency 0–40 ms | 92.15 | 91.65 | 89.65 | 91.2 | 1.7% |
+| **Wind ≤ 2 m/s + gusts** | 90.85 | **83.1** | 88.05 | 87.3 ± 3.9 | **5.8%** (2.5 / **11.3** / 3.5) |
+| Observation noise | 92.9 | 92.75 | 91.45 | 92.4 | 0.4% |
+| Depth noise × 2 | 95.2 | 94.15 | 93.95 | 94.4 | −1.9% |
+| **Full** | 88.06 | **78.6** | 84.3 | **83.6 ± 4.8** | **9.7%** (5.5 / **16.1** / 7.7) |
+
+All in % of episodes. Under full randomization: collisions 10.8 / 18.2 / 11.1%, too high 0.05 / 1.5 / 1.25%, flipped
+0.5 / 0.35 / 1.65%.
+
+1. **The exit test is met on average, narrowly:** a 9.7% mean relative drop against the < 10% target (83.6% fully
+   randomized against 92.7% nominal). It's met on two seeds of three (5.5%, 7.7%); **seed 1 fails at 16.1%**.
+2. **Every factor except wind is solved on every seed:** mass, thrust, motor lag, drag, latency and both noises cost
+   under 2% each.
+3. **Wind is what's left,** and it's seed-dependent: 2.5%, 11.3% and 3.5%. The seed-1 student collides with obstacles
+   in 18% of fully randomized episodes. Its fine-tuned teacher was also the weakest under randomization (23% drop),
+   so, as in Phase 3, the student inherits its teacher's weakness.
+4. **The robustness costs about 2 points at nominal:** 92.7% ± 1.3 against Phase 3's 94.6% ± 0.4.
+
+**Verdict:** Phase 4's exit is met on average but isn't robust across seeds. The remaining work is wind. The
+cheapest things to try:
+- **Train with stronger wind than the test** (e.g. up to 3 m/s), so 2 m/s sits inside the training range rather than
+  at its edge.
+- **Fine-tune the teachers longer.** 1000 iterations left the seed-42 curriculum still climbing (§4).
+
+Cost of seeds 1 and 2: teachers $0.76 + $0.45, students $1.98 + $1.96, tables $0.80 + $0.77, $6.72 in all.
+
+## 6. Fixing wind: stronger training wind, longer fine-tuning
+
+§5.1 left wind as the weak point, varying by seed. Two changes, on all three seeds at once:
+- **Train with stronger wind than the test:** wind up to 3 m/s with 0.75 m/s gusts, for teacher and student. The
+  tests stay at 2 m/s + 0.5 m/s, now inside the training range rather than at its edge.
+- **Fine-tune the teachers longer:** 2000 iterations instead of 1000. §4's seed-42 teacher was still climbing the
+  curriculum at 1000.
+
+Everything else is as in §4–5. Same pipeline script, run names tagged `-w3`.
+
+| Run | Seed 42 | Seed 1 | Seed 2 |
+|---|---|---|---|
+| Fine-tuned teacher | [relovls4](https://forge.coreweave.com/wandb/vedssharma1/isaac-rl/runs/relovls4) | [nlsrwcf1](https://forge.coreweave.com/wandb/vedssharma1/isaac-rl/runs/nlsrwcf1) | [g9ope2wo](https://forge.coreweave.com/wandb/vedssharma1/isaac-rl/runs/g9ope2wo) |
+| GRU student | [0fbiefxc](https://forge.coreweave.com/wandb/vedssharma1/isaac-rl/runs/0fbiefxc) | [hzxsqsor](https://forge.coreweave.com/wandb/vedssharma1/isaac-rl/runs/hzxsqsor) | [9l44nfl0](https://forge.coreweave.com/wandb/vedssharma1/isaac-rl/runs/9l44nfl0) |
+
+**Teachers** (held-out level 5; the "full" evaluation uses the 2 m/s test wind):
+
+| Teacher | Nominal | Full | Relative drop | §5.1's teacher (nominal / full / drop) |
+|---|---:|---:|---:|---|
+| s42 | 92.3% | 82.7% | 10.4% | 93.3 / 81.35 / 12.8% |
+| s1 | 92.8% | 74.2% | 20.1% | 93.8 / 71.95 / 23.3% |
+| s2 | **85.9%** | 78.35% | 8.8% | 90.0 / 78.0 / 13.3% |
+
+**Students:**
+
+| Held-out level 5 | §5.1 (2 m/s, 1000 it.): s42 / s1 / s2 | Mean ± SD | **Stronger wind: s42 / s1 / s2** | **Mean ± SD** |
+|---|---|---:|---|---:|
+| **Nominal** | 93.15 / 93.7 / 91.25 | **92.7 ± 1.3** | 89.55 / 93.8 / **81.7** | **88.3 ± 6.2** |
+| Mass, thrust, motor lag, drag, latency, obs noise | | 91.2–92.5 | | 87.4–88.6 |
+| Wind 2 m/s + gusts | 90.85 / 83.1 / 88.05 | 87.3 ± 3.9 | 87.0 / 88.9 / 87.9 | **88.0 ± 0.95** |
+| **Full** | 88.06 / 78.6 / 84.3 | 83.6 ± 4.8 | 85.9 / 83.4 / 85.3 | **84.9 ± 1.3** |
+| Mean relative drop (per seed) | | 9.7% (5.5 / 16.1 / 7.7) | | 3.6% (4.1 / 11.1 / −4.5) |
+
+All in % of episodes. Seed 2 at nominal: 10.2% time-outs, 8.1% collisions. Seed 42 at nominal: 10.3% collisions.
+
+1. **Wind is evened out.** Under 2 m/s wind every seed is now at 87–89% (SD 0.95, against 3.9), and the weak seed 1
+   improves under full randomization (78.6% → 83.4%). Fully randomized success is slightly higher and much steadier:
+   84.9% ± 1.3 against 83.6% ± 4.8.
+2. **But nominal success falls:** 92.7% → 88.3%, with seed 2 at 81.7%. Its teacher had already lost 4 points at
+   nominal (90.0% → 85.9%), and the student inherited it, with 10% of calm episodes timing out. Seed 42's student
+   collides more at nominal (10.3% against 6.65%).
+3. **That makes the relative drop misleading here.** A 3.6% mean drop looks like a big improvement on 9.7%, but much
+   of it comes from a worse nominal, not a better randomized result. Seed 2 even does better fully randomized than
+   nominal. Seed 1, whose nominal held up, still fails the test (11.1%).
+4. **Averaged over nominal and fully randomized,** the §5.1 setup is better (88.2% against 86.6%).
+
+**Decision:** keep §5.1's setup (2 m/s training wind, 1000 fine-tuning iterations) as the Phase 4 result:
+- 92.7% nominal, 83.6% fully randomized, 9.7% mean drop;
+- the exit test met on average, on two seeds of three.
+
+The stronger-wind variant shows the trade-off rather than fixing it. Ideas not yet tried:
+- keep calm conditions in training (e.g. half the episodes windless), so the policy doesn't lose its calm-air
+  behaviour;
+- give the teacher the wind as a privileged observation, so its labels compensate for wind precisely and the GRU
+  student only has to infer it.
+
+Cost: $12.86 (teachers $1.13 + $1.23 + $1.81, students $1.46 + $1.90 + $1.29, tables $1.37 + $1.02 + $1.65). Two
+runs' prices are computed by hand, because the launcher's price lookup failed. The tables took 35–57 minutes of box
+time against about 22 in §5.1, mostly the launcher's follow stalls adding idle time.
+

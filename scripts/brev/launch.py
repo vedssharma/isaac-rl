@@ -513,7 +513,7 @@ echo "started pid $!"
             return
         # Signal only run_remote.sh's `timeout`: it passes SIGINT on to train.py once (and SIGKILLs it if it
         # hangs). Signalling python directly as well would interrupt its W&B cleanup a second time.
-        ssh(self.name, "pkill -INT -f '^timeout .*[s]cripts/(train|play).py' || true", timeout=60)
+        ssh(self.name, "pkill -INT -f '^timeout .*[s]cripts/(train|distill|play|check_depth).py' || true", timeout=60)
         end = time.time() + wait_s
         while time.time() < end:
             r = ssh(self.name, f"cat {self.remote_run_dir}/exit_code", timeout=60)
