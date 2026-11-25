@@ -9,7 +9,7 @@ Status:
 - [x] Video tooling: a chase camera that follows the heading, and the depth view as a picture-in-picture (§2)
 - [x] Write-up videos of the final policy (§2)
 - [x] README ([../README.md](../README.md))
-- [ ] Model card on Hugging Face and a W&B report: they publish to the user's accounts, so they wait for a go-ahead
+- [x] Model card on Hugging Face and a W&B report (§3)
 
 ## 1. The benchmark
 
@@ -97,3 +97,16 @@ Face next to the student's checkpoint (`runs/drone_nav_depth_distill/2026-11-23_
 W&B run `86lv5vaj`); `scripts/compose_video.py` rebuilds the composed ones from them.
 
 Cost: about $1.02 for the recording box.
+
+## 3. Model card and W&B report
+
+- **Model card:** [https://huggingface.co/vedssharma/isaac-rl-drone-nav](https://huggingface.co/vedssharma/isaac-rl-drone-nav), from [model-card.md](model-card.md) (uploaded as the repo's `README.md`). It says
+  which checkpoint to use (the randomized GRU student), the input and output layout, a loading snippet (checked on
+  CPU: `drone_nav` installs without Isaac Sim), the benchmark, the limitations and every benchmark checkpoint. The
+  contact sheets and the two composed videos are in the repo's `media/`. The repo has no license yet, and the card
+  says so.
+- **W&B report:** [the report](https://forge.coreweave.com/vedssharma1/isaac-rl/reports/isaac-rl:-a-quadrotor-that-flies-through-clutter-from-depth-alone--VmlldzoxODM2NDEwMQ==), built by `scripts/wandb_report.py` from the same run list as
+  `benchmark_table.py`. It has the summary, the contact sheet, the benchmark table with per-run bar charts for each
+  condition, the teacher's and the students' training curves, and the lessons. Each run set is filtered by run ID,
+  checked to select exactly its policy's three seeds (one earlier failed `p4-distill-gru-dr-s42` run shares a name).
+  The report is visible to whoever can see the W&B project; it is not public.

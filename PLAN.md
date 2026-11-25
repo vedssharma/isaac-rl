@@ -265,7 +265,7 @@ Each phase ends with a **demo video + W&B report**. Don't move on until the exit
 ### Phase 5 — Evaluation and write-up (weeks 11–12)
 - [x] Final benchmark table across policies × difficulty levels × seeds (mean ± 95% CI) (docs/benchmark.md, docs/phase5-writeup.md §1)
 - [x] Videos: chase cam + depth-view picture-in-picture, rendered on an RTX GPU (docs/phase5-writeup.md §2)
-- [ ] README write-up (done: README.md), W&B report, and model card on HF Hub
+- [x] README write-up, W&B report, and model card on HF Hub (docs/phase5-writeup.md §3)
 
 ---
 

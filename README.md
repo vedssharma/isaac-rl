@@ -9,7 +9,9 @@ camera and its own motion sensors. All training ran on rented GPUs (NVIDIA Brev)
 (mass, thrust, motor lag, latency, wind, sensor noise) keeps **82–84%** when all of those are randomized at once,
 where the unrandomized policy falls to 54%.
 
-See [PLAN.md](PLAN.md) for the original plan and goals, and the phase notes below for everything that happened.
+Checkpoints and the model card: [Hugging Face](https://huggingface.co/vedssharma/isaac-rl-drone-nav). Training curves and the benchmark per run: the
+[W&B report](https://forge.coreweave.com/vedssharma1/isaac-rl/reports/isaac-rl:-a-quadrotor-that-flies-through-clutter-from-depth-alone--VmlldzoxODM2NDEwMQ==) (on the project's W&B server). See [PLAN.md](PLAN.md) for the original plan and goals, and the
+phase notes below for everything that happened.
 
 ![The Phase 4 policy on a held-out level-5 map, one frame every 2 s: chase camera, with the depth image it flies from in the top-right corner](docs/images/p5-final-l5.png)
 
