@@ -357,3 +357,13 @@ def test_evals_after_a_play_run_use_its_checkpoint_and_overrides(tmp_path):
     assert script == "play" and args[args.index("--wandb_run") + 1] == "abc123"  # the evaluated run, not the launcher's
     assert "env.eval_terrain_level=5" in args and "env.randomization.mass_spread=0.2" in args
     assert args[args.index("--eval_name") + 1] == "eval_mass" and run.record["evals"] == {"eval_mass": 0}
+
+
+def test_benchmark_mean_ci():
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
+    import benchmark_table as bt
+
+    m, h = bt.mean_ci([90.0, 92.0, 94.0])
+    assert m == 92.0 and abs(h - 4.303 * 2.0 / 3**0.5) < 1e-9  # sd 2, t(2) = 4.303
+    assert bt.mean_ci([5.0]) == (5.0, 0.0)
+    assert bt.cell([90.0, 92.0, 94.0]) == "92.0 ± 5.0"
