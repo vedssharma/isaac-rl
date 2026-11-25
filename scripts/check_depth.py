@@ -27,6 +27,7 @@ parser.add_argument("--timing_steps", type=int, default=200)
 parser.add_argument("--images", type=int, default=8, help="envs to save images of")
 parser.add_argument("--tol", type=float, default=0.03, help="m, plus 1%% of the depth")
 parser.add_argument("--min_agreement", type=float, default=0.99)
+parser.add_argument("--camera_pitch_max_deg", type=float, default=0.0, help="randomize the camera's pitch (Phase 4)")
 parser.add_argument("--name", default="check_depth")
 AppLauncher.add_app_launcher_args(parser)
 args_cli = parser.parse_args()
@@ -88,6 +89,7 @@ def main() -> int:
     cfg.sim.device = args_cli.device or cfg.sim.device
     cfg.depth_noise = False
     cfg.eval_terrain_level = args_cli.level
+    cfg.camera_pitch_max_deg = args_cli.camera_pitch_max_deg
     env = DroneNavDepthEnv(cfg)
     out_dir = REPO_ROOT / "logs" / "check_depth" / args_cli.name
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -110,8 +112,11 @@ def main() -> int:
     depth = env.clean_depth().cpu().numpy().astype(np.float64)
     cam = env._camera.data
     pos = cam.pos_w.cpu().numpy().astype(np.float64)
-    roll, pitch, yaw = (wrap(a) for a in euler_xyz_from_quat(cam.quat_w_world))
+    # Level drones (from the body's attitude: the camera may be pitched on purpose), at the body's heading.
+    roll, pitch, yaw = (wrap(a) for a in euler_xyz_from_quat(env._robot.data.root_quat_w))
     level = ((roll.abs() < math.radians(1.0)) & (pitch.abs() < math.radians(1.0))).cpu().numpy()
+    cam_pitch = env._camera_pitch.cpu().numpy().astype(np.float64)
+    report["camera_pitch_deg_range"] = [float(np.degrees(cam_pitch.min())), float(np.degrees(cam_pitch.max()))]
     yaw = yaw.cpu().numpy().astype(np.float64)
     t = env._terrain
     rows, cols = t.terrain_levels.cpu().numpy(), t.terrain_types.cpu().numpy()
@@ -148,7 +153,7 @@ def main() -> int:
         p_tile = pos[i, :2] - terrain_origins[r, c, :2] + origin_in_tile[:2]
         z = pos[i, 2] - env_origins[i, 2]
         exp, src = of.camera_depth_replay(
-            footprints, (*p_tile, z), yaw[i], col_y, row_z, layout.params.obstacle_height, max_range
+            footprints, (*p_tile, z), yaw[i], col_y, row_z, layout.params.obstacle_height, max_range, cam_pitch[i]
         )
         diff = depth[i] - exp
         tol = args_cli.tol + 0.01 * exp

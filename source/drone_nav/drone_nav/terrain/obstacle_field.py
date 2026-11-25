@@ -618,15 +618,20 @@ def camera_depth_replay(
     row_z: np.ndarray,
     obstacle_height: float,
     max_range: float,
+    pitch: float = 0.0,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Exact distance-to-image-plane image (H, W) of a level pinhole camera at tile-frame `position` (x, y, z above
-    the ground plane), looking along world heading `yaw`. Pixel (r, c)'s ray has camera-frame direction
-    (1, col_y[c], row_z[r]): x forward, y left, z up, as Isaac Lab's pinhole pattern builds them, so the ray reaches
-    the image-plane depth s at s * (1, y, z). Footprints are prisms from the ground to obstacle_height; the ground
-    is the plane z = 0 everywhere. Also returns the source of each pixel: the footprint's index, -1 for the ground,
-    -2 for nothing within max_range (depth = max_range)."""
+    """Exact distance-to-image-plane image (H, W) of a pinhole camera at tile-frame `position` (x, y, z above
+    the ground plane), looking along world heading `yaw`, tilted `pitch` radians nose-down (0: level).
+
+    Pixel (r, c)'s ray has camera-frame direction (1, col_y[c], row_z[r]): x forward, y left, z up, as Isaac Lab's
+    pinhole pattern builds them, so the ray reaches the image-plane depth s at s * (1, y, z). Footprints are prisms
+    from the ground to obstacle_height; the ground is the plane z = 0 everywhere. Also returns the source of each
+    pixel: the footprint's index, -1 for the ground, -2 for nothing within max_range (depth = max_range).
+    """
     col_y = np.asarray(col_y, dtype=np.float64)
     row_z = np.asarray(row_z, dtype=np.float64)
+    if pitch != 0.0:
+        return _camera_depth_replay_pitched(footprints, position, yaw, col_y, row_z, obstacle_height, max_range, pitch)
     x, y, z = (float(v) for v in position)
     angles = yaw + np.arctan2(col_y, 1.0)  # (W,) world heading of each column
     horiz = np.sqrt(1.0 + col_y**2)  # horizontal length of the ray per unit depth
@@ -648,6 +653,62 @@ def camera_depth_replay(
     source = np.where(closer, -1, source)
     beyond = depth >= max_range
     return np.where(beyond, max_range, depth), np.where(beyond, -2, source)
+
+
+def _camera_depth_replay_pitched(
+    footprints: list[Obstacle], position, yaw: float, col_y: np.ndarray, row_z: np.ndarray, obstacle_height: float,
+    max_range: float, pitch: float,
+) -> tuple[np.ndarray, np.ndarray]:
+    """camera_depth_replay for a pitched camera: every pixel's ray has its own heading and elevation."""
+    x, y, z = (float(v) for v in position)
+    yy, zz = np.meshgrid(col_y, row_z)  # (H, W) camera-frame ray (1, y, z)
+    c, s_ = math.cos(pitch), math.sin(pitch)
+    fx, fz = c + s_ * zz, -s_ + c * zz  # rotated about the camera's y axis (positive pitch: x towards -z)
+    cy, sy = math.cos(yaw), math.sin(yaw)
+    dx, dy = cy * fx - sy * yy, sy * fx + cy * yy  # then by the heading, in the horizontal plane
+    horiz = np.hypot(dx, dy)  # horizontal length of the ray per unit image-plane depth
+    angles = np.arctan2(dy, dx).reshape(1, -1)
+    shape = yy.shape
+    depth = np.full(shape, np.inf)
+    source = np.full(shape, -2, dtype=np.int64)
+    for i, o in enumerate(footprints):
+        t = ray_hit_distances(o, np.array([[x, y]]), angles)[0].reshape(shape) / horiz
+        hit_z = z + fz * t
+        ok = np.isfinite(t) & (hit_z >= 0.0) & (hit_z <= obstacle_height)
+        closer = ok & (t < depth)
+        depth = np.where(closer, t, depth)
+        source = np.where(closer, i, source)
+    with np.errstate(divide="ignore"):
+        ground = np.where(fz < 0.0, z / -fz, np.inf)
+    closer = ground < depth
+    depth = np.where(closer, ground, depth)
+    source = np.where(closer, -1, source)
+    beyond = depth >= max_range
+    return np.where(beyond, max_range, depth), np.where(beyond, -2, source)
+
+
+# -- out-of-distribution maps (Phase 4): variants of the training generator, applied before the terrain is built
+
+# Obstacle mixes (cylinder, box, pole, wall weights), used for both ends of the curriculum.
+OOD_MIXES = {"poles": (0.0, 0.0, 1.0, 0.0), "walls": (0.25, 0.25, 0.1, 0.4)}
+# Sizes outside every training range: bigger cylinders and boxes, thinner poles.
+UNSEEN_SIZES = {"cylinder_radius": (0.5, 0.9), "box_side": (1.5, 2.5), "pole_radius": (0.02, 0.03)}
+
+
+def ood_overrides(
+    p: ObstacleFieldParams, density_scale: float = 1.0, mix: str = "", unseen_sizes: bool = False
+) -> dict:
+    """Field values that turn generator settings `p` into an out-of-distribution variant (empty: unchanged)."""
+    out: dict = {}
+    if density_scale != 1.0:
+        out["density_range"] = tuple(d * density_scale for d in p.density_range)
+    if mix:
+        if mix not in OOD_MIXES:
+            raise ValueError(f"terrain mix must be one of {sorted(OOD_MIXES)}, not {mix!r}")
+        out["mix_easy"] = out["mix_hard"] = OOD_MIXES[mix]
+    if unseen_sizes:
+        out.update(UNSEEN_SIZES)
+    return out
 
 
 # -- near misses (evaluation): how did the drone meet the obstacle it hit?

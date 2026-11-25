@@ -18,9 +18,12 @@ obstacles. It was trained at collision_radius=0.15; the student keeps the evalua
 
 from __future__ import annotations
 
+import math
+
 import torch
 from isaaclab.sensors import RayCasterCamera, RayCasterCameraCfg, patterns
 from isaaclab.utils import configclass
+from isaaclab.utils.math import quat_mul
 
 from drone_nav.sensors import depth as depth_mdp
 from drone_nav.tasks.obstacles.obstacles_env import GOAL_OBS_DIM, DroneNavObstaclesEnv, DroneNavObstaclesEnvCfg
@@ -66,6 +69,9 @@ class DroneNavDepthEnvCfg(DroneNavObstaclesEnvCfg):
     depth_edge_threshold: float = 0.3  # m
     # Phase 4: multiplies the noise model's Gaussian std, range-dependent std and both dropout probabilities.
     depth_noise_scale: float = 1.0
+    # Phase 4: the camera's mounting pitch, drawn per env at every reset from U(-max, max) degrees (positive: nose
+    # down). 0 (the default) keeps it level and draws nothing.
+    camera_pitch_max_deg: float = 0.0
 
 
 class DroneNavDepthEnv(DroneNavObstaclesEnv):
@@ -75,6 +81,10 @@ class DroneNavDepthEnv(DroneNavObstaclesEnv):
         super().__init__(cfg, render_mode, **kwargs)
         if self._camera.num_instances != self.num_envs:
             raise RuntimeError(f"the depth camera found {self._camera.num_instances} drones for {self.num_envs} envs")
+        # The camera's mounting rotation per env (Isaac Lab's RayCasterCamera._offset_quat: (n, 4), "world"
+        # convention, applied on top of the body pose at every update), and the pitch drawn on top of it.
+        self._camera_base_quat = self._camera._offset_quat.clone()
+        self._camera_pitch = torch.zeros(self.num_envs, device=self.device)  # radians, positive nose-down
 
     def _policy_obs_dim(self, cfg: DroneNavDepthEnvCfg) -> int:
         pattern = cfg.depth_camera.pattern_cfg
@@ -89,6 +99,14 @@ class DroneNavDepthEnv(DroneNavObstaclesEnv):
     def depth_image_shape(self) -> tuple[int, int]:
         pattern = self.cfg.depth_camera.pattern_cfg
         return pattern.height, pattern.width
+
+    def _randomize(self, env_ids: torch.Tensor) -> None:
+        super()._randomize(env_ids)
+        max_deg = self.cfg.camera_pitch_max_deg
+        if max_deg > 0:
+            pitch = (2.0 * torch.rand(len(env_ids), device=self.device) - 1.0) * math.radians(max_deg)
+            self._camera_pitch[env_ids] = pitch
+            self._camera._offset_quat[env_ids] = quat_mul(self._camera_base_quat[env_ids], depth_mdp.pitch_quat(pitch))
 
     def _record_image_shape(self) -> tuple[int, int] | None:
         self._record_image_range = self.cfg.depth_camera.max_distance

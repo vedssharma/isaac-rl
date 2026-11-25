@@ -139,3 +139,55 @@ def test_camera_replay_sees_over_a_short_obstacle_only_above_its_top():
     assert (src[sees & (1.0 / np.maximum(-row_z, 1e-9) > 2.5)] == 0).all()
     assert (src[~sees] != 0).all()
     assert (depth <= 6.0).all() and (depth[src == -2] == 6.0).all()
+
+
+def test_pitch_quat_tilts_the_view_down():
+    from drone_nav.mdp import randomization as rnd
+
+    q = dm.pitch_quat(torch.tensor([0.0, 0.2]))
+    forward = torch.tensor([[1.0, 0.0, 0.0]] * 2)
+    # world_to_body applies q^-1; the camera's forward axis in the parent frame is q applied, i.e. q^-1 of -angle.
+    body = rnd.world_to_body(forward, torch.stack([q[:, 0], -q[:, 1], -q[:, 2], -q[:, 3]], dim=-1))
+    torch.testing.assert_close(body[0], torch.tensor([1.0, 0.0, 0.0]))
+    torch.testing.assert_close(body[1], torch.tensor([math.cos(0.2), 0.0, -math.sin(0.2)]), atol=1e-6, rtol=0)
+
+
+def test_pitched_replay_matches_level_at_zero_and_sees_the_ground_sooner_when_tilted_down():
+    import numpy as np
+
+    col_y, row_z = _rays()
+    p = of.ObstacleFieldParams()
+    layout = of.generate_layout(p, 0.55, of.layout_rng(4, 0.55))
+    fps = of.layout_footprints(layout)
+    pos, yaw = (3.0, 5.0, 1.2), 0.3
+    level, src = of.camera_depth_replay(fps, pos, yaw, col_y, row_z, 5.0, 6.0)
+    tiny, src_t = of._camera_depth_replay_pitched(fps, pos, yaw, col_y, row_z, 5.0, 6.0, 1e-9)
+    np.testing.assert_allclose(tiny, level, atol=1e-6)  # the general path agrees with the level one
+    down, src_d = of.camera_depth_replay(fps, pos, yaw, col_y, row_z, 5.0, 6.0, pitch=np.radians(10))
+    up, src_u = of.camera_depth_replay(fps, pos, yaw, col_y, row_z, 5.0, 6.0, pitch=np.radians(-10))
+    assert (src_d == -1).sum() > (src == -1).sum() > (src_u == -1).sum()  # more ground in view when tilted down
+
+
+def test_ood_variants_still_generate_passable_layouts():
+    import numpy as np
+
+    p = of.ObstacleFieldParams()
+    assert of.ood_overrides(p) == {}
+    for kw in ({"density_scale": 1.5}, {"mix": "poles"}, {"mix": "walls"}, {"unseen_sizes": True}):
+        q = of.ObstacleFieldParams(**{**p.__dict__, **of.ood_overrides(p, **kw)})
+        for seed in range(5):
+            layout = of.generate_layout(q, 0.55, of.layout_rng(seed, 0.55))
+            assert of.is_passable(layout)
+        if kw.get("mix") == "poles":
+            assert all(o.kind == "pole" for o in layout.obstacles)
+        if kw.get("unseen_sizes"):
+            assert all(o.radius <= 0.03 for o in layout.obstacles if o.kind == "pole")
+            assert all(o.radius >= 0.5 for o in layout.obstacles if o.kind == "cylinder")
+    dense = of.ObstacleFieldParams(**{**p.__dict__, **of.ood_overrides(p, density_scale=1.5)})
+    n_dense = np.mean([len(of.generate_layout(dense, 0.55, of.layout_rng(s, 0.55)).obstacles) for s in range(5)])
+    n_base = np.mean([len(of.generate_layout(p, 0.55, of.layout_rng(s, 0.55)).obstacles) for s in range(5)])
+    assert n_dense > 1.25 * n_base
+    import pytest
+
+    with pytest.raises(ValueError):
+        of.ood_overrides(p, mix="spheres")

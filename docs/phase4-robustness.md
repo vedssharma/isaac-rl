@@ -16,7 +16,9 @@ Status:
 - [x] Stronger training wind and longer teacher fine-tuning (§6): the students cope with wind consistently, and
   fully randomized success is steadier (84.9% ± 1.3), but nominal success falls to 88.3% ± 6.2. Not adopted: §5.1's
   setup stays the Phase 4 result
-- [ ] Camera pitch randomization; out-of-distribution maps (higher density, new obstacle kinds)
+- [x] Camera pitch randomization and out-of-distribution maps (§7): pitch up to ±10° costs nothing; with pitch
+  added to "full", the mean drop is 10.7%, just over the target. Density, unseen sizes and poles-only cost 5–8%;
+  wall-heavy maps 15%
 
 **The policy under test** is the Phase 3 result (docs/phase3-depth-student.md §10.1): the GRU depth student, seed 42
 ([uke1cqz8](https://forge.coreweave.com/wandb/vedssharma1/isaac-rl/runs/uke1cqz8)), 94.75% / 5.2% on the 60
@@ -280,4 +282,73 @@ The stronger-wind variant shows the trade-off rather than fixing it. Ideas not y
 Cost: $12.86 (teachers $1.13 + $1.23 + $1.81, students $1.46 + $1.90 + $1.29, tables $1.37 + $1.02 + $1.65). Two
 runs' prices are computed by hand, because the launcher's price lookup failed. The tables took 35–57 minutes of box
 time against about 22 in §5.1, mostly the launcher's follow stalls adding idle time.
+
+## 7. Camera pitch and out-of-distribution maps
+
+The last two Phase 4 items in PLAN.md: camera pitch in the randomization list (§5.5), and the out-of-distribution
+evaluation ("higher density, new primitive types, more noise"). Commit `f869480`.
+
+**Camera pitch:** `env.camera_pitch_max_deg` (depth task) draws each env's camera mounting pitch at every reset from
+U(−max, max) degrees, positive nose-down. It writes the rows of Isaac Lab's `RayCasterCamera._offset_quat`: one
+(w, x, y, z) row per env, in the "world" convention, applied on top of the body pose at every update.
+`camera_depth_replay` now takes a pitch, with per-pixel rays, and a CPU test checks that the pitched path reproduces
+the level one at zero pitch.
+
+On the GPU, `check_depth.py --camera_pitch_max_deg 10` (`p4-check-depth-pitch`, 256 cameras pitched −9.8° to +10°)
+agrees with exact geometry on **99.97%** of pixels, as the level check did (Phase 3 §2). Ground pixels agree on
+99.998%, which also confirms the sign.
+
+**Out-of-distribution maps:** scalar env settings that change the terrain generator before it builds
+(`obstacle_field.ood_overrides`; a CPU test checks every variant still generates passable layouts):
+- `env.terrain_density_scale`: obstacle density × s at every difficulty;
+- `env.terrain_mix`: `poles` (only poles) or `walls` (wall-heavy: 40% walls);
+- `env.terrain_unseen_sizes`: sizes outside every training range. Cylinders 0.5–0.9 m in radius (training ≤ 0.5),
+  boxes 1.5–2.5 m a side (≤ 1.5), poles 2–3 cm in radius (≥ 3 cm).
+
+**Evaluation** (`p4-ood-gru-dr-s{42,1,2}`, one box per student, $1.36): §5.1's three randomization-trained students
+(`0g9bvtcl`, `bmylysop`, `jegy71of`), 60 held-out layouts, 2000 episodes per condition, level 5 unless stated:
+
+| Condition | Success s42 / s1 / s2 | Mean | Drop from nominal | Mean collisions (poles) | Time-out |
+|---|---|---:|---:|---:|---:|
+| Nominal | 93.2 / 93.7 / 91.3 | **92.7** | | 6.3 (4.8) | 0.9 |
+| Camera pitch ±5° | 93.1 / 93.3 / 91.5 | 92.6 | 0.1% | 6.2 (4.7) | 1.0 |
+| Camera pitch ±10° | 93.1 / 92.8 / 90.8 | 92.2 | 0.5% | 6.5 (4.8) | 1.2 |
+| **Full randomization + pitch ±5°** | 87.1 / 77.2 / 84.0 | **82.75** | **10.7%** (6.5 / 17.6 / 8.0) | 14.0 (4.3) | 0.9 |
+| Depth noise × 3, observation noise × 2 | 96.2 / 93.5 / 95.5 | 95.1 | −2.6% | 3.9 (2.4) | 0.9 |
+| Sizes outside training | 86.7 / 89.6 / 87.1 | 87.8 | 5.3% | 11.3 (9.1) | 0.9 |
+| Density × 1.5 | 86.8 / 87.7 / 84.7 | 86.4 | 6.8% | 11.5 (9.2) | 2.0 |
+| Poles only | 84.3 / 86.5 / 86.3 | 85.7 | 7.5% | 14.2 (13.7) | 0 |
+| Wall-heavy | 85.3 / 80.3 / 71.3 | 79.0 | 14.9% | 12.5 (6.0) | 8.5 |
+| Level 9 (densest training level, 0.6 m gaps) | 51.9 / 65.1 / 54.9 | 57.3 | 38.2% | 32.5 (13.2) | 10.2 |
+
+1. **Camera pitch is a non-issue:** up to ±10° costs at most 0.5%, though the students never trained with it. A 90°
+   wide view from a 3 m/s drone barely changes with a few degrees of tilt.
+2. **With pitch in the "full" condition, the exit test is right at the line:** a 10.7% mean drop (9.7% without
+   pitch, §5.1). Seeds 42 and 2 pass (6.5%, 8.0%); seed 1 fails (17.6%), through wind as before.
+3. **Noise is not a problem in either direction:** three times the depth noise and twice the observation noise
+   *improves* success (95.1%), and pole collisions fall (2.4%). The students trained at twice the depth noise, so
+   more noise is closer to their training than nominal is. That it helps beyond that suggests heavier noise makes
+   the policy more cautious near thin obstacles. Untested.
+4. **Out-of-distribution maps cost 5–8%, through poles:**
+   - Thinner-than-training poles (unseen sizes), denser maps (more poles) and poles-only maps all move collisions
+     towards poles (9–14%). Bigger cylinders and boxes are handled.
+   - Poles remain the student's weak point, as in every phase since 2.
+5. **Walls are the weak spot out of distribution:** wall-heavy maps cost 15% (and 22% on seed 2), mostly time-outs
+   (8.5%). That's the old door-finding problem (Phase 3 §8): with more walls, the GRU's memory of where the door was
+   isn't always enough.
+6. **Level 9 is out of reach:** 57%. Its 0.6 m gaps and 12 obstacles per 100 m² were in training, but the students
+   never mastered it. They ended training with 22–31% of envs on level 9, at 54–58% success on their current
+   levels.
+
+**Phase 4 verdict:**
+- **The exit test is met narrowly without camera pitch** (9.7% mean drop) **and missed narrowly with it** (10.7%).
+  Both rest on two seeds of three, with seed 1 failing through wind.
+- **Robust:** mass, inertia, thrust, motor lag, drag, latency, sensor noise and camera pitch each cost under 2%, where
+  the Phase 3 student lost 8% to mass and 12% to wind.
+- **Not solved:** wind at full strength, poles, and wall-heavy layouts.
+
+Moving obstacles (PLAN.md's optional item) are not attempted.
+
+Cost of §7: $1.36 for the evaluations, plus the pitch check (its launcher was killed when the app quit, before it
+could account the cost: about 4 minutes up, plus a Nebius delete, roughly $0.20–0.55).
 
