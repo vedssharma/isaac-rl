@@ -263,9 +263,9 @@ Each phase ends with a **demo video + W&B report**. Don't move on until the exit
   seeds without camera pitch, 10.7% with it; seed 1 fails through wind both times (docs/phase4-robustness.md §5.1, §7).**
 
 ### Phase 5 — Evaluation and write-up (weeks 11–12)
-- [ ] Final benchmark table across policies × difficulty levels × seeds (mean ± 95% CI)
-- [ ] Videos: chase cam + depth-view picture-in-picture, rendered on an RTX GPU
-- [ ] README write-up, W&B report, and model card on HF Hub
+- [x] Final benchmark table across policies × difficulty levels × seeds (mean ± 95% CI) (docs/benchmark.md, docs/phase5-writeup.md §1)
+- [x] Videos: chase cam + depth-view picture-in-picture, rendered on an RTX GPU (docs/phase5-writeup.md §2)
+- [ ] README write-up (done: README.md), W&B report, and model card on HF Hub
 
 ---
 

@@ -52,6 +52,13 @@ src.add_argument("--checkpoint_path", type=str, help="A local checkpoint file in
 parser.add_argument("--episodes", type=int, default=1000, help="Evaluate until this many episodes have ended.")
 parser.add_argument("--video", action="store_true", default=False, help="Record a video of env 0.")
 parser.add_argument("--video_length", type=int, default=1000, help="Length of the video (in env steps).")
+parser.add_argument(
+    "--chase_heading",
+    action="store_true",
+    default=False,
+    help="with --video: keep the camera behind and above env 0's drone along its (smoothed) heading, instead of at "
+    "a fixed world offset that can end up inside obstacles",
+)
 parser.add_argument("--hf_upload", choices=("yes", "no"), default="yes", help="Upload the results and video to HF.")
 parser.add_argument(
     "--eval_name",
@@ -170,13 +177,40 @@ def upload_results(out_dir: Path, run, name: str) -> None:
             repo_type="model",
             folder_path=str(out_dir),
             path_in_repo=path_in_repo,
-            allow_patterns=[f"{name}.json", f"videos/{name}/*.mp4", f"failures/{name}/*.npz"],
+            allow_patterns=[f"{name}.json", f"videos/{name}/*.mp4", f"videos/{name}/*.npz", f"failures/{name}/*.npz"],
             commit_message=f"{run.name}: evaluation {name}",
         )
         print(f"[INFO] Uploaded the evaluation to https://huggingface.co/{repo_id}/tree/main/{path_in_repo}")
     except Exception:
         print("[WARN] HF upload of the evaluation failed:")
         traceback.print_exc()
+
+
+class ChaseCamera:
+    """Keeps the viewer behind and above env 0's drone along its heading (--chase_heading). Isaac Lab's viewport
+    camera controller, following the robot (the Drone-Nav viewer cfg), places the camera at the robot's position
+    plus default_cam_eye and looks at its position plus default_cam_lookat; this turns those offsets with the
+    drone's yaw, smoothed so that the picture doesn't shake with every correction."""
+
+    def __init__(self, env, back: float = 1.6, up: float = 0.6, ahead: float = 2.0, smoothing: float = 0.9):
+        self.env, self.back, self.up, self.ahead, self.smoothing = env, back, up, ahead, smoothing
+        self.controller = getattr(env, "viewport_camera_controller", None)
+        self.heading = None  # smoothed unit vector (x, y)
+        if self.controller is None or not hasattr(env, "_robot"):
+            print("[WARN] --chase_heading: no viewport camera controller or robot; keeping the default camera")
+
+    def update(self) -> None:
+        if self.controller is None or not hasattr(self.env, "_robot"):
+            return
+        w, x, y, z = self.env._robot.data.root_quat_w[0].tolist()
+        yaw = math.atan2(2 * (w * z + x * y), 1 - 2 * (y * y + z * z))
+        new = np.array([math.cos(yaw), math.sin(yaw)])
+        h = new if self.heading is None else self.smoothing * self.heading + (1 - self.smoothing) * new
+        self.heading = h / max(np.linalg.norm(h), 1e-6)
+        hx, hy = self.heading
+        self.controller.update_view_location(
+            eye=(-self.back * hx, -self.back * hy, self.up), lookat=(self.ahead * hx, self.ahead * hy, 0.0)
+        )
 
 
 @hydra_task_config(args_cli.task, args_cli.agent)
@@ -230,6 +264,12 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     logs: dict[str, list[torch.Tensor]] = {}
     episodes = 0
     obs = env.get_observations()
+    # With --video on a depth task: env 0's depth observation after every recorded step (what the policy saw), for
+    # scripts/compose_video.py's picture-in-picture. Frame k of the video is the state after step k, like these.
+    depth_hw = getattr(env.unwrapped, "depth_image_shape", None) if args_cli.video else None
+    depth_frames: list[torch.Tensor] = []
+    env0_dones: list[bool] = []
+    chase = ChaseCamera(env.unwrapped) if args_cli.video and args_cli.chase_heading else None
     steps = 0
     # Keep going until the video is complete too, even if the episodes are done first.
     video_steps = args_cli.video_length if args_cli.video else 0
@@ -237,6 +277,12 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
         with torch.inference_mode():
             obs, _, dones, extras = env.step(policy(obs))
             reset_policy(dones)
+            if depth_hw is not None and steps < args_cli.video_length:
+                h, w = depth_hw
+                depth_frames.append((obs["policy"][0, -h * w :].reshape(h, w) * 255).round().byte().cpu())
+                env0_dones.append(bool(dones[0]))
+            if chase is not None:
+                chase.update()
         steps += 1
         log = extras.get("log")
         if log and episodes < args_cli.episodes:
@@ -275,6 +321,17 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
                 failure_dir / f"{i:03d}_{rec['meta']['termination']}.npz", meta=json.dumps(rec["meta"]), **arrays
             )
         print(f"[INFO] Wrote {len(failures)} crashed episodes to {failure_dir}")
+
+    if depth_frames:
+        video_dir = out_dir / "videos" / args_cli.eval_name
+        video_dir.mkdir(parents=True, exist_ok=True)
+        np.savez_compressed(
+            video_dir / "depth_env0.npz",
+            frames=torch.stack(depth_frames).numpy(),
+            dones=np.array(env0_dones),
+            fps=1.0 / env.unwrapped.step_dt,
+        )
+        print(f"[INFO] Wrote {len(depth_frames)} depth frames of env 0 to {video_dir / 'depth_env0.npz'}")
 
     env.close()  # finishes writing a video that is still recording
     if run is not None:
