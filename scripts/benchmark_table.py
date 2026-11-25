@@ -12,6 +12,7 @@ seeds, t = 4.30, so the intervals are wide: they describe seed-to-seed variation
 from __future__ import annotations
 
 import argparse
+import functools
 import json
 import math
 import os
@@ -55,12 +56,19 @@ def cell(values: list[float]) -> str:
     return f"{m:.1f} ± {h:.1f}" if len(values) > 1 else f"{m:.1f}"
 
 
-def fetch(run_id: str, name: str, cache: Path) -> dict | None:
+@functools.cache
+def hf_url_of(run_id: str) -> str | None:
+    """The run's Hugging Face folder (one W&B lookup per run, however many results it has)."""
     import wandb
-    from huggingface_hub import hf_hub_download
 
     run = wandb.Api(timeout=60).run(f"{os.environ['WANDB_ENTITY']}/{os.environ['WANDB_PROJECT']}/{run_id}")
-    hf_url = wandb_summary.summary_value(run, "hf_url")
+    return wandb_summary.summary_value(run, "hf_url")
+
+
+def fetch(run_id: str, name: str, cache: Path) -> dict | None:
+    from huggingface_hub import hf_hub_download
+
+    hf_url = hf_url_of(run_id)
     if not hf_url:
         return None
     path = hf_url.split("/tree/main/", 1)[-1] + f"/play/{name}.json"
