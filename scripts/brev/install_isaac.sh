@@ -51,7 +51,10 @@ apt_retry() {
   done
   return 1
 }
-apt_retry update -qq
+# apt-get update fails when any source fails, including third-party ones in the image that we don't install
+# from (InfluxData's repo, mid mirror-sync, failed six times in a row on 2026-11-27). The Ubuntu indexes we need
+# still update, so carry on; if they really are missing, the install below fails.
+apt_retry update -qq || echo "apt-get update kept failing (a third-party source?); installing from the indexes that did update"
 apt_retry install -y -qq git cmake build-essential libglu1-mesa libegl1 libvulkan1 libxt6 libxrandr2 >/dev/null
 
 echo "== Python 3.11 venv via uv =="
