@@ -558,6 +558,13 @@ echo "started pid $!"
         except Exception as e:  # noqa: BLE001
             log(f"verify: W&B run {path} not found: {e}")
             return False
+        # train.py has exited, but the W&B server can take a while to mark the run finished (seen 2026-11-27:
+        # 'running' a second after a clean exit, so the run's evaluations were skipped). Give it two minutes.
+        for _ in range(12):
+            if run.state != "running":
+                break
+            time.sleep(10)
+            run = wandb.Api(timeout=60).run(path)
         self.record["wandb_url"] = run.url
         restore_summary_keys(run, ("final_checkpoint", "hf_url", "training_time_s"))
         ckpt, hf_url = run.summary.get("final_checkpoint"), run.summary.get("hf_url")
